@@ -1348,6 +1348,19 @@ HyperLogLog 由 Philippe Flajolet 在 原始论文[《HyperLogLog: the analysis 
 
 ### 应用场景
 
+- 消息队列
+  - 在点对点模型(P2P)的场景下，较之于 `List`，`Stream` 内置了 id 相关功能，并保障全局唯一
+  - 在发布订阅模型(Pub/Sub)的场景下，`Stream` 利用消息组的能力也可以实现广播能力，且提供了 ack 机制
+  - 较之于消息队列中间件，Redis 作为缓存，会存在数据丢失风险，以及消息积压带来的内存压力，需要结合使用场景选取合适的方案
+
+  <br>
+
+  - 添加消息，使用默认 id 保障有序：`xadd stream_key * name silk`
+  - 创建消息组，起始 id 为 0：`xgroup create stream_key group1 0`
+  - 消费者读取消息：`xreadgroup count 1 group group1 consumer1 streams stream_key >`
+  - 消费者确认消费消息：`xack stream_key group1 12345`
+  - 查看未处理完成的消息：`xpending stream_key group1`
+
 ## 参考
 
 - 《Redis 设计与实现》（基于 Redis 3.0 版本）
