@@ -1184,6 +1184,8 @@ HyperLogLog 由 Philippe Flajolet 在 原始论文[《HyperLogLog: the analysis 
 
 - 添加消息：
 
+  <br>
+
   ```shell
   > xadd stream_key * idx 1 name jia # 添加一条消息，* 代表使用 redis 默认 ID
   "1726845349463-0" # 返回消息 id，前者为时间戳，后面为时间戳相同时的自增 id
@@ -1204,7 +1206,9 @@ HyperLogLog 由 Philippe Flajolet 在 原始论文[《HyperLogLog: the analysis 
 <br>
 
 - 读消息
-  - 所有操作均为幂等操作，可以重复读取
+  - 操作均为幂等操作，可以重复读取
+
+  <br>
 
   ```shell
   > xrange stream_key 1726845356176 + # 查看 id 范围内的消息，同样 + 和 - 代表正负无穷
@@ -1233,7 +1237,7 @@ HyperLogLog 由 Philippe Flajolet 在 原始论文[《HyperLogLog: the analysis 
      2) 1) 1) "1726845363024-0"
           2) 1) "idx" 2) "3" 3) "name" 4) "bing"
 
-  > xread count 2 block 1000 streams stream_key $ # $ 代表读取该命令阻塞期间，新写入的消息
+  > xread count 2 block 1000 streams stream_key $ # $ 代表忽略已有消息，读取新写入的消息
   (nil)
   ```
 
@@ -1241,6 +1245,8 @@ HyperLogLog 由 Philippe Flajolet 在 原始论文[《HyperLogLog: the analysis 
 
 - 删除消息
   - 一般用于真正消费后，再移除消息，即确认消费
+
+  <br>
 
   ```shell
   > xdel stream_key 1726845356176
@@ -1256,6 +1262,89 @@ HyperLogLog 由 Philippe Flajolet 在 原始论文[《HyperLogLog: the analysis 
 <br>
 
 - 消费组
+  - 同一个消费组内的多个消费者，不能消费同一条消息，可用于实现负载均衡
+  - 多个消费组之间，可以消费同一条消息，可用于实现广播
+
+  <br>
+
+  ```shell
+  # 创建一个消费组，从 id 为 0 之后的消息开始消费
+  > xgroup create stream_key group1 0
+  "OK"
+
+  # 创建一个消费者进行读取，> 代表从未消费过的消息开始读取
+  > xreadgroup group group1 consumer1 streams stream_key > 
+  1) 1) "stream_key"
+     2) 1) 1) "1726845349463-0"
+           2) 1) "idx" 2) "1" 3) "name" 4) "jia"
+        2) 1) "1726845363024-0"
+           2) 1) "idx" 2) "3" 3) "name" 4) "bing"
+
+  # 创建一个同组消费者进行读取，所有消息都被 consumer1 消费，返回空
+  > xreadgroup group group1 consumer2 streams stream_key > 
+  (nil)
+
+  # 查看从 id 0 之后，所有消费者已经读取，但未进行确认的消息
+  > xreadgroup group group1 consumer1 streams stream_key 0
+  1) 1) "stream_key"
+     2) 1) 1) "1726845349463-0"
+           2) 1) "idx" 2) "1" 3) "name" 4) "jia"
+        2) 1) "1726845363024-0"
+           2) 1) "idx" 2) "3" 3) "name" 4) "bing"
+
+  > xreadgroup group group1 consumer2 streams stream_key 0
+  1) 1) "stream_key"
+     2) (empty list or set)
+
+  # 查看当前消费组读取但未确认的所有消息
+  > xpending stream_key group1 
+  1) "2"                # 消息数量
+  2) "1726845349463-0"  # 消息最小 id
+  3) "1726845363024-0"  # 消息最大 id
+  4) 1) 1) "consumer1"  # 消费者
+        1) "2"          # 该消费者读取但未确认的消息数量
+
+  > xpending stream_key group1 - + 1 consumer1 
+  1) 1) "1726845349463-0" # 未确认的消息 id
+     2) "consumer1"       # 消费者名称
+     3) "1995503"         # 未确认的时间
+     4) "3"               # 消息被传递的次数
+
+  # 确认某条消息，会从 pending 列表中移除
+  > xack stream_key group1 1726845349463
+  (integer) 1
+
+  > xpending stream_key group1
+  1) "1"
+  2) "1726845363024-0"
+  3) "1726845363024-0"
+  4) 1) 1) "consumer1"
+        2) "1"
+
+  # 创建新消费组，从 id 为 0 之后的消息开始消费
+  > xgroup create stream_key group2 0
+  "OK"
+
+  # 不同消费组间的读取操作，不受影响，count 限制读取数量
+  > xreadgroup count 1 group group2 consumer1 streams stream_key > 
+  1) 1) "stream_key"
+     2) 1) 1) "1726845349463-0"
+           2) 1) "idx" 2) "1" 3) "name" 4) "jia"
+
+  # 继续读取操作，block 可以设置阻塞时间
+  > xreadgroup block 1000 group group2 consumer1 streams stream_key >
+  1) 1) "stream_key"
+     2) 1) 1) "1726845363024-0"
+           2) 1) "idx" 2) "3" 3) "name" 4) "bing"
+  
+  # 新建消费组 3，$ 代表忽略已有消息，从新消息开始读取
+  > xgroup create stream_key group3 $
+  "OK"
+
+  # 未写入新消息时，读取为空
+  > xreadgroup group group3 consumer1 streams stream_key >
+  (nil)
+  ```
 
 ### 应用场景
 
