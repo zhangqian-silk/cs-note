@@ -229,3 +229,8 @@
           }
       }
       ```
+
+## Ref
+
+- <https://redis.io/kb/doc/1fqjridk8w/what-are-the-impacts-of-the-redis-expiration-algorithm>
+- <https://xiaolincoding.com/redis/module/strategy.html>

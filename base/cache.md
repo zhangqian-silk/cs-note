@@ -363,7 +363,7 @@ Cache Aside 是最常用的一种缓存策略，其主要流程如下
 - 分布式缓存（Redis）
 - 存储层缓存（数据库缓存）
 
-## 参考
+## Ref
 
 - <https://zhuanlan.zhihu.com/p/591436083>
 - <https://en.wikipedia.org/wiki/Cache_replacement_policies>

@@ -1042,7 +1042,7 @@ func (mc *MyChannel) IsClosed() bool {
 }
 ```
 
-## 参考
+## Ref
 
 - <https://draveness.me/golang/docs/part3-runtime/ch06-concurrency/golang-channel/>
 - <https://juejin.cn/post/7033671944587182087>

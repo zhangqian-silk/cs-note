@@ -518,7 +518,7 @@ copy(s2, s1)
 fmt.Println(s2) // "[1 2 3]"
 ```
 
-## 参考
+## Ref
 
 - <https://draveness.me/golang/docs/part2-foundation/ch03-datastructure/golang-array-and-slice/>
 - <https://godeamon.com/post/go-slice-growth/>

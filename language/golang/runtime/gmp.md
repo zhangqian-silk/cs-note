@@ -128,11 +128,9 @@ GMP 模型本身仍然是基于协作式的多任务处理方式，必须依赖 
 - 当 P 的本地队列为空时，M 会优先从全局队列获取新的 G 转移至 P 的本地队列中，一次转移的数量为 `min(len(GQ)/GOMAXPROCS + 1, len(GQ/2))`，每次转移的数量较少，保障全局的负载均衡
 - 当 P 的本地队列与全局队列均为空时，M 会执行 work stealing 策略，从其他 P 的本地队列中转移尾部的一半 G 至自己对应的 P 的本地队列中
 
-## 参考
+## Ref
 
 - <https://xiaolincoding.com/os/4_process/process_base.html#%E8%BF%9B%E7%A8%8B>
-- <https://en.wikipedia.org/wiki/Light-weight_process>
-- <https://naoffer.com/article/detail/2837>
 - <https://mthli.xyz/stackful-stackless/>
 - <https://www.chiark.greenend.org.uk/~sgtatham/coroutines.html>
 - <https://draveness.me/golang/docs/part3-runtime/ch06-concurrency/golang-goroutine/>

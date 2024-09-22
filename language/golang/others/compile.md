@@ -1140,7 +1140,7 @@ func (pp *Progs) Flush() {
 }
 ```
 
-## 参考
+## Ref
 
 - <https://github.com/golang/go/blob/go1.22.0/src/cmd/compile/README.md>
 - <https://draveness.me/golang/docs/part1-prerequisite/ch02-compile/golang-compile-intro/>

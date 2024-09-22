@@ -1556,7 +1556,7 @@ func advanceEvacuationMark(h *hmap, t *maptype, newbit uintptr) {
 }
 ```
 
-## 参考
+## Ref
 
 - <https://draveness.me/golang/docs/part2-foundation/ch03-datastructure/golang-hashmap/>
 - <https://blog.csdn.net/Jeff_fei/article/details/134052696>

@@ -1353,7 +1353,7 @@ HyperLogLog 由 Philippe Flajolet 在 原始论文[《HyperLogLog: the analysis 
   - 消费者确认消费消息：`xack stream_key group1 12345`
   - 查看未处理完成的消息：`xpending stream_key group1`
 
-## 参考
+## Ref
 
 - 《Redis 设计与实现》（基于 Redis 3.0 版本）
 - <https://xiaolincoding.com/redis/data_struct/command.html#string>

@@ -135,3 +135,7 @@ Golang 在某个版本中，基于以上两种屏障技术，实现了一种混�
 - 内存清理阶段：
   - 修改状态位，初始化清理状态，关闭写屏障
   - 关闭 STW，清理待回收的内存
+
+## Ref
+
+- <https://draveness.me/golang/docs/part3-runtime/ch07-memory/golang-garbage-collector/>
