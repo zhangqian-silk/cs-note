@@ -6,9 +6,13 @@ Redis 是一个基于内存的 KV 数据库，提供了极高的读写性能和�
 
 [Data Type](data_type.md)
 
+## Expiration Algorithm
+
+[Expiration Algorithm](expiration_algorithm.md)
+
 ## Eviction Policy
 
-当 Redis 的内存达到上限时，如果仍有新数据写入，则会因为内存不足而出现问题，此时可以根据淘汰策略的不同，来控制 Redis 的执行逻辑。
+当 Redis 的内存达到上限时，如果仍有新数据写入，则会因为内存不足而出现问题，此时可以根据淘汰策略的不同，Redis 命令的执行逻辑也会存在差异。
 
 目前，Redis 7.0 共支持 8 种不同的淘汰策略，即 [maxmemory_policy_enum](https://github.com/redis/redis/blob/7.0.0/src/config.c#L49)，详细说明如下：
 
@@ -90,3 +94,8 @@ if err != nil {
 }
 fmt.Println("key:", val)
 ```
+
+## Ref
+
+- <https://xiaolincoding.com/redis/>
+- <https://redis.io/kb/doc/1fqjridk8w/what-are-the-impacts-of-the-redis-expiration-algorithm>

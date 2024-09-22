@@ -238,7 +238,6 @@ static int checkStringLength(client *c, long long size) {
 - `raw`：在其他情况下，均会使用 `raw` 编码类型，先分配 [redisObject](https://github.com/redis/redis/blob/7.0.0/src/server.h#L845) 的内存，再分配 [sdshdr8](https://github.com/redis/redis/blob/7.0.0/src/sds.h#L51) 的内存
   - 对于 `embstr` 来说，创建与释放均仅需要调用一次函数，且内存连续可以更好的利用 CPU 缓存，
   - 字符串长度在增长时，有可能会触发扩容逻辑，重新进行内存分配，有可能会不满足 `int` 和 `embstr` 的条件，出于简单考虑，规定 `int` 和 `embstr` 编码方式仅支持读，触发写逻辑时会将其转为 `raw` 编码类型再进行修改
-
 <br>
 
 - `size_limit`
@@ -441,7 +440,6 @@ static int checkStringLength(client *c, long long size) {
 ### 应用场景
 
 - 分布式存储：在分布式架构下，某些临时数据需要维护在服务器内存，而不需要持久化存储时，可以通过 Redis 实现数据共享
-
 <br>
 
 - 缓存对象：常使用对象标识加主键一起作为 key 值
@@ -463,7 +461,6 @@ static int checkStringLength(client *c, long long size) {
 <br>
 
 - 计数器：Redis 本身在处理命令时是单线程操作，不存在并发问题，所以适合于计数场景，比如页面 PV、点赞次数等
-
 <br>
 
 - 分布式锁：
@@ -796,7 +793,6 @@ createSizeTConfig(
   - 获取点赞用户量：`scard like:article:1`
   - 获取所有点赞用户：`smembers like:article:1`
   - 判断用户是否点赞：`sismember like:article:1 user:1`
-
 <br>
 
 - 共同关注
@@ -810,7 +806,6 @@ createSizeTConfig(
   - 用户 2 关注：`sadd follow:user:2 author:2 author:3`
   - 共同关注：`sinter follow:user:1 follow:user:2`
   - 向用户 1 推荐用户 2 的关注内容：`sdiff follow:user:2 follow:user:1`
-
 <br>
 
 - 抽奖
@@ -946,7 +941,6 @@ createSizeTConfig(
   - 获取商品销量：`zscore rank product:2`
   - 获取商品销量最高的三个元素及其销量：`zrange rank 0 2 withscores rev`
   - 获取销量在 50 和 200 以内的元素：`zrange rank 50 200 withscores byscore`
-
 <br>
 
 - 目录索引
@@ -1048,7 +1042,6 @@ createSizeTConfig(
   - 检查用户是否签到：`getbit user:100:202403 25`
   - 获取用户某月签到次数：`bitcount user:100:202403`
   - 获取用户某月首次签到日期：`bitpos user:100:202403 1`
-
 <br>
 
 - 连续签到统计
@@ -1060,7 +1053,6 @@ createSizeTConfig(
   - 获取 21 日至 23 日连续签到的用户：
     - 三个日期的 bitmap 取交集：`bitop and res sign:20240321 sign:20240322 sign:20240323`
     - 统计个数：`bitcount res`
-
 <br>
 
 - 统计在线用户
