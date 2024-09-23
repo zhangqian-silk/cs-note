@@ -375,6 +375,121 @@ func (m *Mutex) Unlock() {
     }
     ```
 
-## Ref
+## RWMutex
+
+> [wiki/读写锁](https://zh.wikipedia.org/wiki/%E8%AF%BB%E5%86%99%E9%94%81)
+
+读写锁是并发控制的其中一种机制，读操作是可重入的，写操作是互斥的，即多个读操作可以并发执行，多个写操作或者读写操作之间，无法并发执行。
+
+### 数据结构
+
+读写锁的数据结构为 [RWMutex](https://github.com/golang/go/blob/go1.22.0/src/sync/rwmutex.go#L35):
+
+- `w`：底层互斥锁，用于实现写操作的互斥逻辑
+- `writeSem` & `readerSem`：读、写操作的信号量，用于读、写之间的互斥、等待
+- `readerCount`：读操作数量，被写操作阻塞时为负数
+- `readerWait`：写操作阻塞时，正在执行的读操作的数量
+
+```go
+type RWMutex struct {
+    w           Mutex        // held if there are pending writers
+    writerSem   uint32       // semaphore for writers to wait for completing readers
+    readerSem   uint32       // semaphore for readers to wait for completing writers
+    readerCount atomic.Int32 // number of pending readers
+    readerWait  atomic.Int32 // number of departing readers
+}
+```
+
+### 写锁
+
+在获取写锁时，需要调用 [Lock()](https://github.com/golang/go/blob/go1.22.0/src/sync/rwmutex.go#L140) 方法进行处理，先阻塞后续的读写操作，然后等待当前的所有读操作执行完成后，完成写锁的获取。
+
+- 调用 `rw.w.Lock()` 方法，获取底层互斥锁，用于解决多个写操作之间的竞争问题
+- 修改 `readerCount` 的值，将其变为负值，阻塞后续的读操作
+- 获取当前正在活跃的读操作的数量，即变量 `r`
+- 如果有活跃的读操作，则进入休眠状态，等待读操作执行完成，即等待 `rw.writerSem` 信号量的释放
+
+    ```go
+    func (rw *RWMutex) Lock() {
+        // First, resolve competition with other writers.
+        rw.w.Lock()
+        // Announce to readers there is a pending writer.
+        r := rw.readerCount.Add(-rwmutexMaxReaders) + rwmutexMaxReaders
+        // Wait for active readers.
+        if r != 0 && rw.readerWait.Add(r) != 0 {
+            runtime_SemacquireRWMutex(&rw.writerSem, false, 0)
+        }
+    }
+    ```
+
+<br>
+
+在释放时，需要调用 [Unlock()](https://github.com/golang/go/blob/go1.22.0/src/sync/rwmutex.go#L197) 方法进行处理，优先释放读锁，再释放写锁，避免连续的写操作导致读操作无法执行。
+
+- 修改 `readerCount` 的值，将其变为正值，允许读操作进行
+- 获取被阻塞的的读操作的数量，即变量 `r`
+- 通过循环，释放 `rw.readerSem` 信号量，唤醒所有被阻塞的读操作的 goroutine
+- 调用 `rw.w.Unlock()` 释放底层互斥锁
+
+    ```go
+    func (rw *RWMutex) Unlock() {
+        // Announce to readers there is no active writer.
+        r := rw.readerCount.Add(rwmutexMaxReaders)
+        if r >= rwmutexMaxReaders {
+            fatal("sync: Unlock of unlocked RWMutex")
+        }
+        // Unblock blocked readers, if any.
+        for i := 0; i < int(r); i++ {
+            runtime_Semrelease(&rw.readerSem, false, 0)
+        }
+        // Allow other writers to proceed.
+        rw.w.Unlock()
+    }
+    ```
+
+### 读锁
+
+在获取读锁时，需要调用 [RLock()](https://github.com/golang/go/blob/go1.22.0/src/sync/rwmutex.go#L63) 方法进行处理:
+
+- 将 `readerCount` 的值加一
+- 如果结果为负数，说明被写操作阻塞，进入休眠状态，等待信号量 `rw.readerSem` 的释放。
+
+    ```go
+    func (rw *RWMutex) RLock() {
+        if rw.readerCount.Add(1) < 0 {
+            // A writer is pending, wait for it.
+            runtime_SemacquireRWMutexR(&rw.readerSem, false, 0)
+        }
+    }
+    ```
+
+在释放锁时，需要调用 [RUnlock()](https://github.com/golang/go/blob/go1.22.0/src/sync/rwmutex.go#L110) 方法和 [rUnlockSlow()](https://github.com/golang/go/blob/go1.22.0/src/sync/rwmutex.go#L125) 方法进行进行处理：
+
+- 将 `readerCount` 的值减一
+- 如果结果为非负数，直接解锁成功
+- 如果结果为负数，说明有正在执行的写操作，则调用 [rUnlockSlow()](https://github.com/golang/go/blob/go1.22.0/src/sync/rwmutex.go#L125) 方法，减少 `readerWait` 的数量，如果最终结果为一，说明所有阻塞写操作的读操作均已结束，则释放 `rw.writerSem` 信号量，唤醒写操作的 goroutine
+
+```go
+func (rw *RWMutex) RUnlock() {
+    if r := rw.readerCount.Add(-1); r < 0 {
+        // Outlined slow-path to allow the fast-path to be inlined
+        rw.rUnlockSlow(r)
+    }
+}
+
+func (rw *RWMutex) rUnlockSlow(r int32) {
+    if r+1 == 0 || r+1 == -rwmutexMaxReaders {
+        fatal("sync: RUnlock of unlocked RWMutex")
+    }
+    // A writer is pending.
+    if rw.readerWait.Add(-1) == 0 {
+        // The last reader unblocks the writer.
+        runtime_Semrelease(&rw.writerSem, false, 1)
+    }
+}
+```
+
+## 引用
 
 - <https://draveness.me/golang/docs/part3-runtime/ch06-concurrency/golang-sync-primitives/>
+- <https://juejin.cn/post/7091903444193116168>
