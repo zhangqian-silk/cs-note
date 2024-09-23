@@ -98,4 +98,3 @@ fmt.Println("key:", val)
 ## Ref
 
 - <https://xiaolincoding.com/redis/module/strategy.html>
-
