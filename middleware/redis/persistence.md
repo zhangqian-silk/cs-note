@@ -81,7 +81,7 @@ Redis 在正常执行了用户的操作命令后，会通过命令传播模块�
     }
     ```
 
-  - 添加时间戳注解，用于解决 AOF 当前记录时间戳与服务端 unix 时间戳不一致的问题
+  - 添加时间戳注解，用于解决 AOF 当前记录时间戳与服务端 unix 时间戳不一致的问题，以及数据有效期问题
 
     ```c
     void feedAppendOnlyFile(int dictid, robj **argv, int argc) {
@@ -117,7 +117,7 @@ Redis 在正常执行了用户的操作命令后，会通过命令传播模块�
     }
     ```
 
-  - 将操作命令写入缓冲区
+  - 构造命令日志，并将命令写入缓冲区
 
     ```c
     void feedAppendOnlyFile(int dictid, robj **argv, int argc) {
@@ -415,7 +415,232 @@ Redis 在正常执行了用户的操作命令后，会通过命令传播模块�
 
 因为 AOF 日志会完整的记录用户所有操作，文件大小一定会越来越大。且对于数据本身而言，会有过期、更新、删除等变更，日志里肯定会有冗余数据。
 
-为此，Redis 提供了 AOF 的重写机制，在重写时，会读取当前内存中的所有数据，生成对应的写命令，并将其存入新的 AOF 文件中。全部记录完成后，用新的 AOF 文件替换现有的 AOF 文件，且两份文件会保障最终一致。
+为此，在 Redis 内部提供了 AOF 的重写机制，在 AOF 文件大小超过一定限度时，读取当前内存中的所有数据，生成对应的写命令，并将其存入新的 AOF 文件中。全部记录完成后，用新的 AOF 文件替换现有的 AOF 文件，且两份文件会保障最终一致。
+
+为了避免阻塞，一般会通过子进程来完成相关操作。在创建子进程时，只会复制页表等数据，父子进程以只读的方式共享内存，修改时触发“写时复制”逻辑，复制实际的物理内存。相较于子线程的对于共享内存的加锁等处理方案，一般来说，子进程性能会更高。但是仍需要注意 bigkey 问题，避免“写时复制”时，阻塞主进程较长时间。
+
+在重写过程中，如果触发了新的写命令，Redis 会正常将命令写入 AOF 缓冲区，然后通过 flush 与 fsync 的操作将其写入硬盘。但是主线程执行 fsync 逻辑时，可能会被重写操作阻塞，进行导致服务不可用。可以通过 `aof_no_fsync_on_rewrite` 标志位，推迟执行 fsync 逻辑。
+
+- [rewriteAppendOnlyFileBackground()](https://github.com/redis/redis/blob/7.0.0/src/aof.c#L2381)：创建后台子进程重写 AOF 文件
+
+  - 在 server 端的定时任务 [serverCron()](https://github.com/redis/redis/blob/7.0.0/src/server.c#L1157) 中，会判断是否执行重写操作
+    - 判断 `aof_rewrite_scheduled` 状态位，某些情况下，例如有 RDB 子进程正在执行，则会推迟重写操作，在此处进行执行
+    - 判断 AOF 文件大小，如果超过了设定的阈值 `aof_rewrite_min_size`，且与上次重写时的 AOF 文件大小 `aof_rewrite_base_size` 相比超过了阈值 `aof_rewrite_perc`，则执行重写逻辑
+
+    ```c
+    int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
+        ...
+        /* Start a scheduled AOF rewrite if this was requested by the user while
+        * a BGSAVE was in progress. */
+        if (!hasActiveChildProcess() &&
+            server.aof_rewrite_scheduled &&
+            !aofRewriteLimited())
+        {
+            rewriteAppendOnlyFileBackground();
+        }
+        /* Check if a background saving or AOF rewrite in progress terminated. */
+        if (hasActiveChildProcess() || ldbPendingChildren())
+        {
+            ...
+        } else {
+            ...
+
+            /* Trigger an AOF rewrite if needed. */
+            if (server.aof_state == AOF_ON &&
+                !hasActiveChildProcess() &&
+                server.aof_rewrite_perc &&
+                server.aof_current_size > server.aof_rewrite_min_size)
+            {
+                long long base = server.aof_rewrite_base_size ?
+                    server.aof_rewrite_base_size : 1;
+                long long growth = (server.aof_current_size*100/base) - 100;
+                if (growth >= server.aof_rewrite_perc && !aofRewriteLimited()) {
+                    serverLog(LL_NOTICE,"Starting automatic rewriting of AOF on %lld%% growth",growth);
+                    rewriteAppendOnlyFileBackground();
+                }
+            }
+        }
+        ...
+    }
+    ```
+
+  - 预处理
+    - 校验是否存在其他子进程，以及 aof 文件是否存在
+    - 更新 `aof_selected_db` 标记位，强制下一次更新 AOF 日志时添加 `SELECT` 指令
+    - 刷新当前 AOF 文件，创建一个新的 AOF 文件用于重写，并更新计数器
+
+    ```c
+    int rewriteAppendOnlyFileBackground(void) {
+        pid_t childpid;
+
+        if (hasActiveChildProcess()) return C_ERR;
+
+        if (dirCreateIfMissing(server.aof_dirname) == -1) {
+            serverLog(LL_WARNING, "Can't open or create append-only dir %s: %s",
+                server.aof_dirname, strerror(errno));
+            return C_ERR;
+        }
+
+        /* We set aof_selected_db to -1 in order to force the next call to the
+        * feedAppendOnlyFile() to issue a SELECT command. */
+        server.aof_selected_db = -1;
+        flushAppendOnlyFile(1);
+        if (openNewIncrAofForAppend() != C_OK) return C_ERR;
+        server.stat_aof_rewrites++;
+        ...
+    }
+    ```
+
+  - 创建子进程，并调用 [rewriteAppendOnlyFile()](https://github.com/redis/redis/blob/7.0.0/src/aof.c#L2306) 函数执行重写操作
+
+    ```c
+    int rewriteAppendOnlyFileBackground(void) {
+        ...
+        if ((childpid = redisFork(CHILD_TYPE_AOF)) == 0) {
+            char tmpfile[256];
+
+            /* Child */
+            redisSetProcTitle("redis-aof-rewrite");
+            redisSetCpuAffinity(server.aof_rewrite_cpulist);
+            snprintf(tmpfile,256,"temp-rewriteaof-bg-%d.aof", (int) getpid());
+            if (rewriteAppendOnlyFile(tmpfile) == C_OK) {
+                sendChildCowInfo(CHILD_INFO_TYPE_AOF_COW_SIZE, "AOF rewrite");
+                exitFromChild(0);
+            } else {
+                exitFromChild(1);
+            }
+        } else {
+            /* Parent */
+            ...
+        }
+        return C_OK; /* unreached */
+    }
+    ```
+
+  - 父进程中，处理创建子进程失败的情况，并重置 `aof_rewrite_scheduled` 标识位
+
+    ```c
+    int rewriteAppendOnlyFileBackground(void) {
+        ...
+        if ((childpid = redisFork(CHILD_TYPE_AOF)) == 0) {
+            char tmpfile[256];
+
+            /* Child */
+            ...
+        } else {
+            /* Parent */
+            if (childpid == -1) {
+                server.aof_lastbgrewrite_status = C_ERR;
+                serverLog(LL_WARNING,
+                    "Can't rewrite append only file in background: fork: %s",
+                    strerror(errno));
+                return C_ERR;
+            }
+            serverLog(LL_NOTICE,
+                "Background append only file rewriting started by pid %ld",(long) childpid);
+            server.aof_rewrite_scheduled = 0;
+            server.aof_rewrite_time_start = time(NULL);
+            return C_OK;
+        }
+        return C_OK; /* unreached */
+    }
+    ```
+
+- [rewriteAppendOnlyFile()](https://github.com/redis/redis/blob/7.0.0/src/aof.c#L2306)：处理 AOF 重写文件相关逻辑
+
+  - 初始化文件读写相关逻辑
+
+    ```c
+    int rewriteAppendOnlyFile(char *filename) {
+        rio aof;
+        FILE *fp = NULL;
+        char tmpfile[256];
+
+        /* Note that we have to use a different temp name here compared to the
+        * one used by rewriteAppendOnlyFileBackground() function. */
+        snprintf(tmpfile,256,"temp-rewriteaof-%d.aof", (int) getpid());
+        fp = fopen(tmpfile,"w");
+        if (!fp) {
+            serverLog(LL_WARNING, "Opening the temp file for AOF rewrite in rewriteAppendOnlyFile(): %s", strerror(errno));
+            return C_ERR;
+        }
+
+        rioInitWithFile(&aof,fp);
+
+        if (server.aof_rewrite_incremental_fsync)
+            rioSetAutoSync(&aof,REDIS_AUTOSYNC_BYTES);
+
+        startSaving(RDBFLAGS_AOF_PREAMBLE);
+        ...
+    }
+    ```
+
+  - 判断重写策略，如果开启了 `aof_use_rdb_preamble` 配置，代表 RDB 与 AOF 混用，则按照 RDB 格式进行重写，否则按照 AOF 格式进行重写
+
+    ```c
+    int rewriteAppendOnlyFile(char *filename) {
+        ...
+        if (server.aof_use_rdb_preamble) {
+            int error;
+            if (rdbSaveRio(SLAVE_REQ_NONE,&aof,&error,RDBFLAGS_AOF_PREAMBLE,NULL) == C_ERR) {
+                errno = error;
+                goto werr;
+            }
+        } else {
+            if (rewriteAppendOnlyFileRio(&aof) == C_ERR) goto werr;
+        }
+        ...
+    }
+    ```
+
+  - 将数据最终写入硬盘，并关闭文件对象
+
+    ```c
+    int rewriteAppendOnlyFile(char *filename) {
+        ...
+        /* Make sure data will not remain on the OS's output buffers */
+        if (fflush(fp)) goto werr;
+        if (fsync(fileno(fp))) goto werr;
+        if (fclose(fp)) { fp = NULL; goto werr; }
+        fp = NULL;
+        ...
+    }
+    ```
+
+- 执行 rename 操作，完成重写逻辑
+
+    ```c
+    int rewriteAppendOnlyFile(char *filename) {
+        ...
+        /* Use RENAME to make sure the DB file is changed atomically only
+        * if the generate DB file is ok. */
+        if (rename(tmpfile,filename) == -1) {
+            serverLog(LL_WARNING,"Error moving temp append only file on the final destination: %s", strerror(errno));
+            unlink(tmpfile);
+            stopSaving(0);
+            return C_ERR;
+        }
+        serverLog(LL_NOTICE,"SYNC append only file rewrite performed");
+        stopSaving(1);
+
+        return C_OK;
+        ...
+    }
+    ```
+
+- 异常处理：记录异常日志，关闭文件指针，并删除临时文件
+
+    ```c
+    int rewriteAppendOnlyFile(char *filename) {
+        ...
+    werr:
+        serverLog(LL_WARNING,"Write error writing append only file on disk: %s", strerror(errno));
+        if (fp) fclose(fp);
+        unlink(tmpfile);
+        stopSaving(0);
+        return C_ERR;
+    }
+    ```
 
 ### 优缺点
 
@@ -440,3 +665,4 @@ Redis 在正常执行了用户的操作命令后，会通过命令传播模块�
 - <https://redis.io/docs/latest/operate/oss_and_stack/management/persistence/>
 - <https://xiaolincoding.com/redis/storage/aof.html>
 - <https://xiaolincoding.com/redis/storage/rdb.html>
+- <https://bugwz.com/2022/12/04/redis-persistence/#4-4%E3%80%81RDB-Forkless-%E6%8C%81%E4%B9%85%E5%8C%96%E6%96%B9%E6%A1%88>
