@@ -489,7 +489,155 @@ func (rw *RWMutex) rUnlockSlow(r int32) {
 }
 ```
 
+## WaitGroup
+
+> [wiki/同步屏障](https://zh.wikipedia.org/wiki/%E5%90%8C%E6%AD%A5%E5%B1%8F%E9%9A%9C)
+
+同步屏障是并行计算中的一种同步方式，在 golang 中，
+[WaitGroup][WaitGroupLink] 可以用于等待一组 goroutine 执行结束。
+
+### 数据结构
+
+[WaitGroup][WaitGroupLink] 的数据结构如下所示：
+
+- `noCopy`：该属性可以保障 [WaitGroup][WaitGroupLink] 的实例不会触发拷贝操作
+  - 对于 [WaitGroup][WaitGroupLink] 而言，对于其的操作需要必须是要配套进行的，否则会有死锁等严重风险，锁等结构体类似
+
+- `state`：数据存储，高 32 位存储计数，后 32 位存储当前等待的协程的数量
+
+- `sema`：信号量，用于并发控制
+
+```go
+type WaitGroup struct {
+    noCopy noCopy
+
+    state atomic.Uint64 // high 32 bits are counter, low 32 bits are waiter count.
+    sema  uint32
+}
+```
+
+### 核心方法
+
+[WaitGroup][WaitGroupLink] 对外提供了 3 个方法用于实现同步屏障：
+
+- 对于需要在同步屏障前执行的任务，在执行前调用 [Add()][AddLink] 方法将其计数加一，在执行完成后，调用 [Done()][DoneLink] 方法，将其计数减一
+
+- 对于需要在同步屏障后执行的任务，在执行前调用 [Wait()][WaitLink] 方法，等待计数归零
+
+需要注意的是，在真正调用 [Wait()][WaitLink] 方法前，一般要确保所有需要在同步屏障前执行的任务，均已调用 [Add()][AddLink] 方法，不然会有时机同步问题。
+
+- [Add()][AddLink]：
+  - 在方法调用时，会传入需要添加的任务总量，并存储在 `state` 的高 32 位中
+  - 方法内部会做一些合法性校验，限制任务总量不能为负数和限制，限制特殊情况下，[Add()][AddLink] 方法与 [Wait()][WaitLink] 方法的并发调用
+
+    ```go
+    func (wg *WaitGroup) Add(delta int) {
+        state := wg.state.Add(uint64(delta) << 32)
+        v := int32(state >> 32)
+        w := uint32(state)
+
+        if v < 0 {
+            panic("sync: negative WaitGroup counter")
+        }
+        if w != 0 && delta > 0 && v == int32(delta) {
+            panic("sync: WaitGroup misuse: Add called concurrently with Wait")
+        }
+        if v > 0 || w == 0 {
+            return
+        }
+        ...
+    }
+    ```
+
+- [Done()][DoneLink]：
+  - 方法底层通过 [Add()][AddLink] 方法实现，并传入值为 -1
+  - 当 `v == 0 && w > 0` 时，会按照当前等待者的数量，依次调用 `runtime_Semrelease()` 函数，唤醒所有等待者
+
+    ```go
+    func (wg *WaitGroup) Done() {
+        wg.Add(-1)
+    }
+
+    func (wg *WaitGroup) Add(delta int) {
+        ...
+        if v > 0 || w == 0 {
+            return
+        }
+        
+        if wg.state.Load() != state {
+            panic("sync: WaitGroup misuse: Add called concurrently with Wait")
+        }
+        // Reset waiters count to 0.
+        wg.state.Store(0)
+        for ; w != 0; w-- {
+            runtime_Semrelease(&wg.sema, false, 0)
+        }
+    }
+    ```
+
+- [Wait()][WaitLink]：
+  - 在方法调用时，会给 `state` 的低 32 位计数加一，
+  - 并同步调用 `runtime_Semacquire()` 函数，休眠当前协程，等待唤醒
+
+    ```go
+    func (wg *WaitGroup) Wait() {
+        for {
+            state := wg.state.Load()
+            v := int32(state >> 32)
+            w := uint32(state)
+            if v == 0 {
+                // Counter is 0, no need to wait.
+                return
+            }
+            // Increment waiters count.
+            if wg.state.CompareAndSwap(state, state+1) {
+                runtime_Semacquire(&wg.sema)
+                if wg.state.Load() != 0 {
+                    panic("sync: WaitGroup is reused before previous Wait has returned")
+                }
+                return
+            }
+        }
+    }
+    ```
+
+## Once
+
+[Once][OnceLink] 可以用来确保某段代码只会执行一次，其内部结构较为简单，通过一个状态位 `done` 存储执行状态，以及通过锁 `m` 避免并发问题。
+
+```go
+type Once struct {
+    done atomic.Uint32
+    m    Mutex
+}
+```
+
+在使用上，每个需要限制的场景，都需要创建对应的 [Once][OnceLink] 结构体的实例，然后通过 [Do()](https://github.com/golang/go/blob/go1.22.0/src/sync/once.go#L48) 方法，来执行对应的函数：
+
+```go
+func (o *Once) Do(f func()) {
+    if o.done.Load() == 0 {
+        o.doSlow(f)
+    }
+}
+
+func (o *Once) doSlow(f func()) {
+    o.m.Lock()
+    defer o.m.Unlock()
+    if o.done.Load() == 0 {
+        defer o.done.Store(1)
+        f()
+    }
+}
+```
+
 ## 引用
 
 - <https://draveness.me/golang/docs/part3-runtime/ch06-concurrency/golang-sync-primitives/>
 - <https://juejin.cn/post/7091903444193116168>
+
+[WaitGroupLink]: https://github.com/golang/go/blob/go1.22.0/src/sync/waitgroup.go
+[AddLink]: https://github.com/golang/go/blob/go1.22.0/src/sync/waitgroup.go#L43
+[DoneLink]: https://github.com/golang/go/blob/go1.22.0/src/sync/waitgroup.go#L86
+[WaitLink]: https://github.com/golang/go/blob/go1.22.0/src/sync/waitgroup.go#L91
+[OnceLink]: https://github.com/golang/go/blob/go1.22.0/src/sync/once.go#L18
