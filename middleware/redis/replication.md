@@ -656,7 +656,8 @@
 
   - 在 [startBgsaveForReplication()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L831) 函数中，启动了 `bgsave` 操作，用于生成 RDB 文件并同步给从服务器，同时还构造全量复制的请求响应（即 `+FULLRESYNC` 关键字）
     - 根据当前同步方式是否为网络同步，调用不同的方法执行 `bgsave` 操作，即 [rdbSaveToSlavesSockets()](https://github.com/redis/redis/blob/7.0.0/src/rdb.c#L3361) 和 [rdbSaveBackground()](https://github.com/redis/redis/blob/7.0.0/src/rdb.c#L1464)
-    - 针对于基于磁盘的同步方案，额外补发全量复制的请求响应
+    - 针对于 [rdbSaveBackground()](https://github.com/redis/redis/blob/7.0.0/src/rdb.c#L1464) 函数，与持久化方案执行逻辑相同。之后会在定时任务 [serverCron()](https://github.com/redis/redis/blob/7.0.0/src/server.c#L1157) 中，将结果发送给从服务器
+    - 此外，这里还针对于基于磁盘的同步方案，通过 [replicationSetupSlaveForFullResync()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L686) 函数发送全量复制的请求响应
 
     ```c
     int startBgsaveForReplication(int mincapa, int req) {
@@ -684,6 +685,41 @@
             }
         }
         ...
+    }
+    ```
+
+  - 针对于 [rdbSaveToSlavesSockets()](https://github.com/redis/redis/blob/7.0.0/src/rdb.c#L3361) 函数，首先会针对于所有 `SLAVE_STATE_WAIT_BGSAVE_START` 状态下的从服务器，调用 [replicationSetupSlaveForFullResync()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L686) 函数发送全量复制的请求响应，然后通过子进程直接创建 RDB 文件，并刷新至管道中，最终在父进程中通过 [rdbPipeReadHandler()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L1444) 函数将数据发送给从服务器
+
+    ```c
+    int rdbSaveToSlavesSockets(int req, rdbSaveInfo *rsi) {
+        ...
+        while((ln = listNext(&li))) {
+            client *slave = ln->value;
+            if (slave->replstate == SLAVE_STATE_WAIT_BGSAVE_START) {
+                /* Check slave has the exact requirements */
+                if (slave->slave_req != req)
+                    continue;
+                server.rdb_pipe_conns[server.rdb_pipe_numconns++] = slave->conn;
+                replicationSetupSlaveForFullResync(slave,getPsyncInitialOffset());
+            }
+        }
+        /* Create the child process. */
+        if ((childpid = redisFork(CHILD_TYPE_RDB)) == 0) {
+            /* Child */
+            ...
+            retval = rdbSaveRioWithEOFMark(req,&rdb,NULL,rsi);
+            if (retval == C_OK && rioFlush(&rdb) == 0)
+                retval = C_ERR;
+            ...
+        } else {
+            /* Parent */
+            ...
+            if (aeCreateFileEvent(server.el, server.rdb_pipe_read, AE_READABLE, rdbPipeReadHandler,NULL) == AE_ERR) {
+                serverPanic("Unrecoverable error creating server.rdb_pipe_read file event.");
+            }
+            ...
+        }
+        return C_OK; /* Unreached. */
     }
     ```
 
@@ -872,6 +908,406 @@
 
         server.repl_state = REPL_STATE_TRANSFER;
         ...
+    }
+    ```
+
+### 数据传输
+
+- `RDB_CHILD_TYPE_SOCKET`：通过 socket 传输时，会在创建 RDB 文件时直接将数据发送给从服务器
+  - [rdbSaveToSlavesSockets()](https://github.com/redis/redis/blob/7.0.0/src/rdb.c#L3361) 函数，首先会针对于所有 `SLAVE_STATE_WAIT_BGSAVE_START` 状态下的从服务器，调用 [replicationSetupSlaveForFullResync()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L686) 函数发送全量复制的请求响应，并将符合条件的从服务器连接，额外进行存储
+  - 之后函数会通过子进程直接创建 RDB 文件，并刷新至管道中，最终在父进程中通过 [rdbPipeReadHandler()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L1444) 函数将数据发送给从服务器
+
+    ```c
+    int rdbSaveToSlavesSockets(int req, rdbSaveInfo *rsi) {
+        ...
+        while((ln = listNext(&li))) {
+            client *slave = ln->value;
+            if (slave->replstate == SLAVE_STATE_WAIT_BGSAVE_START) {
+                /* Check slave has the exact requirements */
+                if (slave->slave_req != req)
+                    continue;
+                server.rdb_pipe_conns[server.rdb_pipe_numconns++] = slave->conn;
+                replicationSetupSlaveForFullResync(slave,getPsyncInitialOffset());
+            }
+        }
+        /* Create the child process. */
+        if ((childpid = redisFork(CHILD_TYPE_RDB)) == 0) {
+            /* Child */
+            ...
+            retval = rdbSaveRioWithEOFMark(req,&rdb,NULL,rsi);
+            if (retval == C_OK && rioFlush(&rdb) == 0)
+                retval = C_ERR;
+            ...
+        } else {
+            /* Parent */
+            ...
+            if (aeCreateFileEvent(server.el, server.rdb_pipe_read, AE_READABLE, rdbPipeReadHandler,NULL) == AE_ERR) {
+                serverPanic("Unrecoverable error creating server.rdb_pipe_read file event.");
+            }
+            ...
+        }
+        return C_OK; /* Unreached. */
+    }
+    ```
+
+  - 在 [rdbSaveRioWithEOFMark()](https://github.com/redis/redis/blob/7.0.0/src/rdb.c#L1372) 函数内部，会给数据添加上额外标识，即以 `$EOF:` 关键字开头，紧跟一段长度为 `RDB_EOF_MARK_SIZE` 的随机字符，并同时以该字符结尾
+
+    ```c
+    #define RDB_EOF_MARK_SIZE 40
+    int rdbSaveRioWithEOFMark(int req, rio *rdb, int *error, rdbSaveInfo *rsi) {
+        ...
+        getRandomHexChars(eofmark,RDB_EOF_MARK_SIZE);
+        if (error) *error = 0;
+        if (rioWrite(rdb,"$EOF:",5) == 0) goto werr;
+        if (rioWrite(rdb,eofmark,RDB_EOF_MARK_SIZE) == 0) goto werr;
+        if (rioWrite(rdb,"\r\n",2) == 0) goto werr;
+        if (rdbSaveRio(req,rdb,error,RDBFLAGS_NONE,rsi) == C_ERR) goto werr;
+        if (rioWrite(rdb,eofmark,RDB_EOF_MARK_SIZE) == 0) goto werr;
+        ...
+    }
+    ```
+
+  - [rdbPipeReadHandler()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L1444) 函数内部将数据从管道读取至缓冲区中后，遍历从服务器连接，执行发送逻辑
+
+    ```c
+    /* Called in diskless master, when there's data to read from the child's rdb pipe */
+    void rdbPipeReadHandler(struct aeEventLoop *eventLoop, int fd, void *clientData, int mask) {
+        ...
+        while (1) {
+            server.rdb_pipe_bufflen = read(fd, server.rdb_pipe_buff, PROTO_IOBUF_LEN);
+            ...
+            for (i=0; i < server.rdb_pipe_numconns; i++)
+            {
+                connection *conn = server.rdb_pipe_conns[i];
+                ...
+                if ((nwritten = connWrite(conn, server.rdb_pipe_buff, server.rdb_pipe_bufflen)) == -1) {
+                    ...
+                }
+                ...
+            }
+            ...
+        }
+    }
+    ```
+
+<br>
+
+- 主服务器定时任务
+  - 在确认同步方式后，主服务器会同步触发一次 `bgsave` 的操作，并根据实际配置，决定是先保存为 RDB 文件，再传输文件，还是直接通过 socket 直接传输
+  - 在服务器的定时任务 [serverCron()](https://github.com/redis/redis/blob/7.0.0/src/server.c#L1157) 中，如果有活跃的子进程，会统一在 [checkChildrenDone()](https://github.com/redis/redis/blob/7.0.0/src/server.c#L1052) 函数中判断其执行情况（`waitpid()` 函数返回值不为 0，说明存在结束的子进程），并针对 `bgsave` 任务，调用 [backgroundSaveDoneHandler()](https://github.com/redis/redis/blob/7.0.0/src/rdb.c#L3324) 函数进行处理
+  - 最终，会调用 [updateSlavesWaitingBgsave()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L1544) 函数执行数据传输操作
+
+    ```c
+    int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
+        ...
+        if (hasActiveChildProcess() || ldbPendingChildren())
+        {
+            run_with_period(1000) receiveChildInfo();
+            checkChildrenDone();
+        } 
+        ...
+    }
+
+    void checkChildrenDone(void) {
+        ...
+        if ((pid = waitpid(-1, &statloc, WNOHANG)) != 0) {
+            ...
+            if (pid == server.child_pid) {
+                if (server.child_type == CHILD_TYPE_RDB) {
+                    backgroundSaveDoneHandler(exitcode, bysignal);
+                } 
+            }
+            ...
+        }
+        ...
+    }
+
+    void backgroundSaveDoneHandler(int exitcode, int bysignal) {
+        ...
+        updateSlavesWaitingBgsave((!bysignal && exitcode == 0) ? C_OK : C_ERR, type);
+    }
+    ```
+
+  - [updateSlavesWaitingBgsave()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L1544) 函数内部遍历所有状态为 `SLAVE_STATE_WAIT_BGSAVE_END` 的从服务器，并区分其通过 socket 传输数据还是传输 RDB 文件，执行不同的策略
+    - 针对于 socket 传输，在 `bgsave` 任务的完成时，传输任务已经完成，此时将从服务器设置为在线状态
+    - 针对于 RDB 传输，设置网络连接的写回调为 [sendBulkToSlave()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L1344)，执行数据传输逻辑
+
+    ```c
+    void updateSlavesWaitingBgsave(int bgsaveerr, int type) {
+        ...
+        while((ln = listNext(&li))) {
+            client *slave = ln->value;
+
+            if (slave->replstate == SLAVE_STATE_WAIT_BGSAVE_END) {
+                if (type == RDB_CHILD_TYPE_SOCKET) {
+                    serverLog(LL_NOTICE,
+                        "Streamed RDB transfer with replica %s succeeded (socket). Waiting for REPLCONF ACK from slave to enable streaming",
+                            replicationGetSlaveName(slave));
+                    replicaPutOnline(slave);
+                    slave->repl_start_cmd_stream_on_ack = 1;
+                } else {
+                    ...
+                    if (connSetWriteHandler(slave->conn,sendBulkToSlave) == C_ERR) {
+                        freeClientAsync(slave);
+                        continue;
+                    }
+                }
+            }
+        }
+    }
+    ```
+
+<br>
+
+- `RDB_CHILD_TYPE_DISK`：传输 RDB 文件时，每次会传输特定大小的数据，直至最终发送完成
+  - 正式发送 RDB 文件前，先将文件大小发送至从服务器
+  - 然后每次从文件中读取 `PROTO_IOBUF_LEN` 大小的数据存储在缓冲区中并发送至从服务器
+  - 之后会多次调用该函数，直至发送完毕，并同样将从服务器设置为上限状态
+
+    ```c
+    #define PROTO_IOBUF_LEN         (1024*16)  /* Generic I/O buffer size */
+    void sendBulkToSlave(connection *conn) {
+        ...
+        /* Before sending the RDB file, we send the preamble as configured by the
+        * replication process. Currently the preamble is just the bulk count of
+        * the file in the form "$<length>\r\n". */
+        if (slave->replpreamble) {
+            ...
+        }
+
+        /* If the preamble was already transferred, send the RDB bulk data. */
+        lseek(slave->repldbfd,slave->repldboff,SEEK_SET);
+        buflen = read(slave->repldbfd,buf,PROTO_IOBUF_LEN);
+        ...
+        if ((nwritten = connWrite(conn,buf,buflen)) == -1) {
+            ...
+        }
+        slave->repldboff += nwritten;
+        atomicIncr(server.stat_net_output_bytes, nwritten);
+        if (slave->repldboff == slave->repldbsize) {
+            close(slave->repldbfd);
+            slave->repldbfd = -1;
+            connSetWriteHandler(slave->conn,NULL);
+            replicaPutOnline(slave);
+            replicaStartCommandStream(slave);
+        }
+    }
+    ```
+
+- 从服务器读取数据
+  - 在与主服务确认同步方式后，从服务器会将 [readSyncBulkPayload()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L1801) 函数设置为连接的读回调函数，并处理所收到的用于同步的数据
+  - 函数内部首先解析数据格式，针对于 socket 格式数据，会以 `EOF:` 关键字开头，并紧跟长度为 `CONFIG_RUN_ID_SIZE` 的标记位（长度与 `RDB_EOF_MARK_SIZE` 相同），针对于 RDB 文件格式的数据，会解析出其文件长度
+
+    ```c
+    #define CONFIG_RUN_ID_SIZE 40
+    #define RDB_EOF_MARK_SIZE 40
+    void readSyncBulkPayload(connection *conn) {
+        ...
+        if (server.repl_transfer_size == -1) {
+            ...
+            if (strncmp(buf+1,"EOF:",4) == 0 && strlen(buf+5) >= CONFIG_RUN_ID_SIZE) {
+                usemark = 1;
+                memcpy(eofmark,buf+5,CONFIG_RUN_ID_SIZE);
+                memset(lastbytes,0,CONFIG_RUN_ID_SIZE);
+                /* Set any repl_transfer_size to avoid entering this code path
+                * at the next call. */
+                server.repl_transfer_size = 0;
+                serverLog(LL_NOTICE,
+                    "MASTER <-> REPLICA sync: receiving streamed RDB from master with EOF %s",
+                    use_diskless_load? "to parser":"to disk");
+            } else {
+                usemark = 0;
+                server.repl_transfer_size = strtol(buf+1,NULL,10);
+                serverLog(LL_NOTICE,
+                    "MASTER <-> REPLICA sync: receiving %lld bytes from master %s",
+                    (long long) server.repl_transfer_size,
+                    use_diskless_load? "to parser":"to disk");
+            }
+            return;
+        }
+        ...
+    }
+    ```
+
+  - 之后针对于需要磁盘的场景下（即通过 RDB 文件实现数据同步），会将读取到的数据写入之前从服务器创建的临时 RDB 文件 `server.repl_transfer_fd` 中
+  - 在数据量级较大时，会主动执行一次刷盘操作，避免传输结束时出现较大延迟
+  - 最后判断读取是否结束，存在标识位的情况，会判断结尾数据是否与标识位相同，不使用标识位时，会判断读取的数据是否达到预期的长度，若未结束则直接结束函数，等待下次数据传输
+
+    ```c
+    void readSyncBulkPayload(connection *conn) {
+        ...
+        if (!use_diskless_load) {
+            /* Read the data from the socket, store it to a file and search
+            * for the EOF. */
+            ...
+            /* Update the last I/O time for the replication transfer (used in
+            * order to detect timeouts during replication), and write what we
+            * got from the socket to the dump file on disk. */
+            server.repl_transfer_lastio = server.unixtime;
+            if ((nwritten = write(server.repl_transfer_fd,buf,nread)) != nread) {
+                ...
+            }
+            server.repl_transfer_read += nread;
+            ...
+            /* Sync data on disk from time to time, otherwise at the end of the
+            * transfer we may suffer a big delay as the memory buffers are copied
+            * into the actual disk. */
+            if (server.repl_transfer_read >=
+                server.repl_transfer_last_fsync_off + REPL_MAX_WRITTEN_BEFORE_FSYNC)
+            {
+                off_t sync_size = server.repl_transfer_read -
+                                server.repl_transfer_last_fsync_off;
+                rdb_fsync_range(server.repl_transfer_fd,
+                    server.repl_transfer_last_fsync_off, sync_size);
+                server.repl_transfer_last_fsync_off += sync_size;
+            }
+            ...
+            if (!eof_reached) return;
+        }
+        ...
+    }
+    ```
+
+  - 针对于后续逻辑，有如下两种场景
+    - 对于 socket 传输，阻塞后续网络数据传输，并读取当前所有传输数据
+    - 对于 RDB 传输，此时已经获取到了完整的 RDB 文件
+
+    ```c
+    void readSyncBulkPayload(connection *conn) {
+        ...
+        /* We reach this point in one of the following cases:
+        *
+        * 1. The replica is using diskless replication, that is, it reads data
+        *    directly from the socket to the Redis memory, without using
+        *    a temporary RDB file on disk. In that case we just block and
+        *    read everything from the socket.
+        *
+        * 2. Or when we are done reading from the socket to the RDB file, in
+        *    such case we want just to read the RDB file in memory. */
+        ...
+    }
+    ```
+
+  - 取消其他子进程
+
+    ```c
+    void readSyncBulkPayload(connection *conn) {
+        ...
+        /* We need to stop any AOF rewriting child before flushing and parsing
+        * the RDB, otherwise we'll create a copy-on-write disaster. */
+        if (server.aof_state != AOF_OFF) stopAppendOnly();
+        /* Also try to stop save RDB child before flushing and parsing the RDB:
+        * 1. Ensure background save doesn't overwrite synced data after being loaded.
+        * 2. Avoid copy-on-write disaster. */
+        if (server.child_type == CHILD_TYPE_RDB) {
+            if (!use_diskless_load) {
+                serverLog(LL_NOTICE,
+                    "Replica is about to load the RDB file received from the "
+                    "master, but there is a pending RDB child running. "
+                    "Killing process %ld and removing its temp file to avoid "
+                    "any race",
+                    (long) server.child_pid);
+            }
+            killRDBChild();
+        }
+        ...
+    }
+    ```
+
+  - 针对于无盘缓存，阻塞网络连接，然后通过 [rdbLoadRioWithLoadingCtx()](https://github.com/redis/redis/blob/7.0.0/src/rdb.c#L2893) 函数，直接将 RDB 数据加载至内存中，完成数据同步
+
+    ```c
+    void readSyncBulkPayload(connection *conn) {
+        ...
+        if (use_diskless_load) {
+            ...
+            connBlock(conn);
+            ...
+            if (rdbLoadRioWithLoadingCtx(&rdb,RDBFLAGS_REPLICATION,&rsi,&loadingCtx) != C_OK) {
+                ...
+            }
+            ...
+        } 
+        ...
+    }
+    ```
+
+  - 针对于磁盘缓存，会通过 `fsync` 函数，强制将文件刷新至磁盘中，然后将文件重命名为正式的 RDB 文件，最后调用 [rdbLoad()](https://github.com/redis/redis/blob/7.0.0/src/rdb.c#L3246) 函数将 RDB 文件中的数据加载至内存中，完成数据同步
+
+    ```c
+    void readSyncBulkPayload(connection *conn) {
+        ...
+        if (use_diskless_load) {
+            ...
+        } else {
+            /* Make sure the new file (also used for persistence) is fully synced
+            * (not covered by earlier calls to rdb_fsync_range). */
+            if (fsync(server.repl_transfer_fd) == -1) {
+                ...
+            }
+
+            /* Rename rdb like renaming rewrite aof asynchronously. */
+            int old_rdb_fd = open(server.rdb_filename,O_RDONLY|O_NONBLOCK);
+            if (rename(server.repl_transfer_tmpfile,server.rdb_filename) == -1) {
+                ...
+            }
+            ...
+            if (rdbLoad(server.rdb_filename,&rsi,RDBFLAGS_REPLICATION) != C_OK) {
+                ...
+            }
+            ...
+        }
+        ...
+    }
+    ```
+
+  - 创建从服务器与主服务器连接的客户端，并更新状态位为 `REPL_STATE_CONNECTED`
+
+    ```c
+    void readSyncBulkPayload(connection *conn) {
+        ...
+        /* Final setup of the connected slave <- master link */
+        replicationCreateMasterClient(server.repl_transfer_s,rsi.repl_stream_db);
+        server.repl_state = REPL_STATE_CONNECTED;
+        ...
+    }
+    ```
+
+  - 复制请求 ID 以及数据偏移量，并创建缓冲区，用于之后可以执行部分复制
+
+    ```c
+    void readSyncBulkPayload(connection *conn) {
+        ...
+        /* After a full resynchronization we use the replication ID and
+        * offset of the master. The secondary ID / offset are cleared since
+        * we are starting a new history. */
+        memcpy(server.replid,server.master->replid,sizeof(server.replid));
+        server.master_repl_offset = server.master->reploff;
+        clearReplicationId2();
+
+        /* Let's create the replication backlog if needed. Slaves need to
+        * accumulate the backlog regardless of the fact they have sub-slaves
+        * or not, in order to behave correctly if they are promoted to
+        * masters after a failover. */
+        if (server.repl_backlog == NULL) createReplicationBacklog();
+        ...
+    }
+    ```
+
+  - 针对于通过 socket 传输的场景，发送 ack 响应
+  - 针对于开启 AOF 的场景，主动触发一次 AOF 重写
+
+    ```c
+    void readSyncBulkPayload(connection *conn) {
+        ...
+        /* Send the initial ACK immediately to put this replica in online state. */
+        if (usemark) replicationSendAck();
+
+        /* Restart the AOF subsystem now that we finished the sync. This
+        * will trigger an AOF rewrite, and when done will start appending
+        * to the new file. */
+        if (server.aof_enabled) restartAOFAfterSYNC();
+        return;
     }
     ```
 
