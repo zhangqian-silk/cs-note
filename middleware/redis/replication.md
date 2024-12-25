@@ -1633,8 +1633,157 @@ client *createClient(connection *conn) {
 }
 ```
 
-## 部分复制
+## 增量复制
+
+在通过 [`slaveTryPartialResynchronization()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L2366) 函数，发送同步命令时，如果有主服务器相关的缓存数据，即 `replid` 和 `reploff`，同步发送给主服务器。
+
+```c
+void syncWithMaster(connection *conn) {
+    ...
+    if (server.repl_state == REPL_STATE_SEND_PSYNC) {
+        if (slaveTryPartialResynchronization(conn,0) == PSYNC_WRITE_ERROR) {
+            err = sdsnew("Write error sending the PSYNC command.");
+            abortFailover("Write error to failover target");
+            goto write_error;
+        }
+        server.repl_state = REPL_STATE_RECEIVE_PSYNC_REPLY;
+        return;
+    }
+    ...
+}
+
+int slaveTryPartialResynchronization(connection *conn, int read_reply) {
+    ...
+    /* Writing half */
+    if (!read_reply) {
+        server.master_initial_offset = -1;
+
+        if (server.cached_master) {
+            psync_replid = server.cached_master->replid;
+            snprintf(psync_offset,sizeof(psync_offset),"%lld", server.cached_master->reploff+1);
+            serverLog(LL_NOTICE,"Trying a partial resynchronization (request %s:%s).", psync_replid, psync_offset);
+        } else {
+            serverLog(LL_NOTICE,"Partial resynchronization not possible (no cached master)");
+            psync_replid = "?";
+            memcpy(psync_offset,"-1",3);
+        }
+
+        if (server.failover_state == FAILOVER_IN_PROGRESS) {
+            reply = sendCommand(conn,"PSYNC",psync_replid,psync_offset,"FAILOVER",NULL);
+        } else {
+            reply = sendCommand(conn,"PSYNC",psync_replid,psync_offset,NULL);
+        }
+        ...
+        return PSYNC_WAIT_REPLY;
+    }
+    ...
+}
+```
+
+相对应的，主服务器在处理 `psync` 命令时，会通过 [`masterTryPartialResynchronization()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L715) 函数，判断能否执行增量复制。当传入的 `replid` 与主服务器中缓存的 `replid` 或 `replid2` 一致，且传入的 `psync_offset` 在当前积压缓冲区范围内，即 $[offset, offset+histlen]$，可以执行增量复制逻辑。
+
+```c
+/* SYNC and PSYNC command implementation. */
+void syncCommand(client *c) {
+    ...
+    if (!strcasecmp(c->argv[0]->ptr,"psync")) {
+        ...
+        if (masterTryPartialResynchronization(c, psync_offset) == C_OK) {
+            server.stat_sync_partial_ok++;
+            return; /* No full resync needed, return. */
+        }
+        ...
+    }
+    ...
+}
+
+int masterTryPartialResynchronization(client *c, long long psync_offset) {
+    ...
+    if (strcasecmp(master_replid, server.replid) &&
+        (strcasecmp(master_replid, server.replid2) ||
+         psync_offset > server.second_replid_offset))
+    {
+        ...
+        goto need_full_resync;
+    }
+
+    /* We still have the data our slave is asking for? */
+    if (!server.repl_backlog ||
+        psync_offset < server.repl_backlog->offset ||
+        psync_offset > (server.repl_backlog->offset + server.repl_backlog->histlen))
+    {
+        ...
+        goto need_full_resync;
+    }
+    ...
+}
+```
+
+在判断可以执行增量复制后，主服务器会更新一些状态位信息，发送增量复制消息，即 `+CONTINUE` 关键字，然后在 [`addReplyReplicationBacklog()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L595) 函数中将数据发送至从服务器。
+
+```c
+int masterTryPartialResynchronization(client *c, long long psync_offset) {
+    ...
+    if (c->slave_capa & SLAVE_CAPA_PSYNC2) {
+        buflen = snprintf(buf,sizeof(buf),"+CONTINUE %s\r\n", server.replid);
+    } else {
+        buflen = snprintf(buf,sizeof(buf),"+CONTINUE\r\n");
+    }
+    if (connWrite(c->conn,buf,buflen) != buflen) {
+        freeClientAsync(c);
+        return C_OK;
+    }
+    psync_len = addReplyReplicationBacklog(c,psync_offset);
+    ...
+}
+```
+
+[`addReplyReplicationBacklog()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L595) 函数内部会先找到相对应的数据块，再通过 [`prepareClientToWrite()`](https://github.com/redis/redis/blob/7.0.0/src/networking.c#L284) 函数更新客户端的写回调，最后将数据库填充至从服务器的缓冲区 `ref_repl_buf_node` 中，由写回调将其发送至从服务器。缓冲区中数据格式与命令传播、AOF 一致，为具体的执行命令。
+
+```c
+long long addReplyReplicationBacklog(client *c, long long offset) {
+    ...
+    /* Install a writer handler first.*/
+    prepareClientToWrite(c);
+    /* Setting output buffer of the replica. */
+    replBufBlock *o = listNodeValue(node);
+    o->refcount++;
+    c->ref_repl_buf_node = node;
+    c->ref_block_pos = offset - o->repl_offset;
+
+    return server.repl_backlog->histlen - skip;
+}
+```
+
+对应于从服务器，在收到主服务器发送的响应后，通过解析 `+CONTINUE` 关键字，判断走增量复制逻辑，并结束当次同步任务。后续也类似于命令传播的方式，在 [`readQueryFromClient()`](https://github.com/redis/redis/blob/7.0.0/src/networking.c#L2584) 函数中处理积压的命令。
+
+```c
+void syncWithMaster(connection *conn) {
+    ...
+    psync_result = slaveTryPartialResynchronization(conn,1);
+    ...
+    if (psync_result == PSYNC_CONTINUE) {
+        serverLog(LL_NOTICE, "MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.");
+        if (server.supervised_mode == SUPERVISED_SYSTEMD) {
+            redisCommunicateSystemd("STATUS=MASTER <-> REPLICA sync: Partial Resynchronization accepted. Ready to accept connections in read-write mode.\n");
+        }
+        return;
+    }
+    ...
+}
+
+int slaveTryPartialResynchronization(connection *conn, int read_reply) {
+    ...
+    if (!strncmp(reply,"+CONTINUE",9)) {
+        ...
+        return PSYNC_CONTINUE;
+    }
+    ...
+}
+```
 
 ## Ref
 
 - <https://redis.io/docs/latest/operate/oss_and_stack/management/replication/>
+- <https://xiaolincoding.com/redis/cluster/master_slave_replication.html>
+- <https://blog.csdn.net/lcn29/article/details/142069696>
