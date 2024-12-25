@@ -16,7 +16,7 @@
 
 ## 首次同步
 
-当设置服务器的主从关系时，服务器间需要进行一些数据交互来建立主从关系，此时从服务器的状态，即 [repl_state](https://github.com/redis/redis/blob/7.0.0/src/server.h#L392)，可能存在如下几种情况：
+当设置服务器的主从关系时，服务器间需要进行一些数据交互来建立主从关系，此时从服务器的状态，即 [`repl_state`](https://github.com/redis/redis/blob/7.0.0/src/server.h#L392)，可能存在如下几种情况：
 
 > capa 是 capabilities 的缩写，capa 请求目的是告诉主服务器支持的主从复制能力
 >
@@ -48,7 +48,7 @@
 ### 初始化
 
 - REPL_STATE_NONE：服务初始化
-  - 在服务器初始化时，即 [initServerConfig()](https://github.com/redis/redis/blob/7.0.0/src/server.c#L1830)函数，会统一执行状态位的初始化逻辑
+  - 在服务器初始化时，即 [`initServerConfig()`](https://github.com/redis/redis/blob/7.0.0/src/server.c#L1830)函数，会统一执行状态位的初始化逻辑
 
     ```c
     void initServerConfig(void) {
@@ -58,7 +58,7 @@
     }
     ```
 
-  - 之后，从服务器开始响应 `replicaof` 命令，在 [replicaofCommand()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L3040) 函数中，调用 [replicationSetMaster()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L2908) 函数来设置主服务器相关数据，更新从服务器状态，并触发建连操作，并更新状态为 `REPL_STATE_CONNECT`
+  - 之后，从服务器开始响应 `replicaof` 命令，在 [`replicaofCommand()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L3040) 函数中，调用 [`replicationSetMaster()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L2908) 函数来设置主服务器相关数据，更新从服务器状态，并触发建连操作，并更新状态为 `REPL_STATE_CONNECT`
 
     ```c
     void replicaofCommand(client *c) {
@@ -78,9 +78,9 @@
 
 ### 建连
 
-- REPL_STATE_CONNECT：从服务器开始连接主服务器
-  - 在函数 [connectWithMaster()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L2832) 中，根据 `tls_replication` 标记位，决定发起 TLS 连接或者是普通的 Socket 连接，连接成功后，修改状态为 `REPL_STATE_CONNECTING`
-  - 同时将函数 [syncWithMaster()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L2530) 设置为回调函数，后续从服务器的状态变更，即 `server.repl_state`，均在该函数中处理
+- `REPL_STATE_CONNECT`：从服务器开始连接主服务器
+  - 在函数 [`connectWithMaster()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L2832) 中，根据 `tls_replication` 标记位，决定发起 TLS 连接或者是普通的 Socket 连接，连接成功后，修改状态为 `REPL_STATE_CONNECTING`
+  - 同时将函数 [`syncWithMaster()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L2530) 设置为回调函数，后续从服务器的状态变更，即 `server.repl_state`，均在该函数中处理
 
     ```c
     int connectWithMaster(void) {
@@ -102,7 +102,7 @@
     }
     ```
 
-  - 函数 [connConnect()](https://github.com/redis/redis/blob/7.0.0/src/connection.h#L121) 会调用传入的 `connection` 实例所对应的建连方法，例如 [connCreateTLS()](https://github.com/redis/redis/blob/7.0.0/src/tls.c#L467) 函数，最终会调用 [connTLSConnect()](https://github.com/redis/redis/blob/7.0.0/src/tls.c#L771)
+  - 函数 [`connConnect()`](https://github.com/redis/redis/blob/7.0.0/src/connection.h#L121) 会调用传入的 `connection` 实例所对应的建连方法，例如 [`connCreateTLS()`](https://github.com/redis/redis/blob/7.0.0/src/tls.c#L467) 函数，最终会调用 [`connTLSConnect()`](https://github.com/redis/redis/blob/7.0.0/src/tls.c#L771)
 
     ```c
     static inline int connConnect(connection *conn, const char *addr, int port, const char *src_addr,
@@ -134,8 +134,8 @@
 
 <br>
 
-- REPL_STATE_CONNECTING：建连成功，发送 `ping` 命令请求，等待主服务器回应
-  - 建连函数会调用之前所设置的回调函数 [syncWithMaster()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L2530)
+- `REPL_STATE_CONNECTING`：建连成功，发送 `ping` 命令请求，等待主服务器回应
+  - 建连函数会调用之前所设置的回调函数 [`syncWithMaster()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L2530)
   - 在建连成功后，会更新网络连接的读写回调，在此函数中统一进行处理
   - 修改状态为 `REPL_STATE_RECEIVE_PING_REPLY`
 
@@ -160,7 +160,7 @@
     }
     ```
 
-  - 主服务器在 [pingCommand()](https://github.com/redis/redis/blob/7.0.0/src/server.c#L4237) 函数中，处理 `ping` 命令
+  - 主服务器在 [`pingCommand()`](https://github.com/redis/redis/blob/7.0.0/src/server.c#L4237) 函数中，处理 `ping` 命令
 
     ```c
     void pingCommand(client *c) {
@@ -170,7 +170,7 @@
 
 <br>
 
-- REPL_STATE_RECEIVE_PING_REPLY：等待收到 `ping` 命令响应
+- `REPL_STATE_RECEIVE_PING_REPLY`：等待收到 `ping` 命令响应
   - 从服务器校验 `pong` 命令返回数据，无误后执行后续流程
   - 修改状态为 `REPL_STATE_SEND_HANDSHAKE`，继续执行后续握手逻辑
 
@@ -208,7 +208,7 @@
 
 ### 握手
 
-- REPL_STATE_SEND_HANDSHAKE：开始执行握手阶段
+- `REPL_STATE_SEND_HANDSHAKE`：开始执行握手阶段
   - 如果服务器需要进行认证，则发送 `auth` 请求，传递认证信息（user && password）
   - 同步发送 `REPLCONF` 命令，即 `port` 请求、`ip` 请求和 `capa` 请求
     - `capa` 中的 `eof` 代表全量复制，`psync2` 代表部分复制
@@ -250,7 +250,7 @@
     }
     ```
 
-  - 相对应的，主服务器分别在 [authCommand()](https://github.com/redis/redis/blob/7.0.0/src/acl.c#L2956) 和 [replconfCommand()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L1138) 中进行处理
+  - 相对应的，主服务器分别在 [`authCommand()`](https://github.com/redis/redis/blob/7.0.0/src/acl.c#L2956) 和 [`replconfCommand()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L1138) 中进行处理
 
     ```c
     void authCommand(client *c) {
@@ -264,7 +264,7 @@
 
 <br>
 
-- REPL_STATE_RECEIVE_AUTH_REPLY：处理 `auth` 请求响应
+- `REPL_STATE_RECEIVE_AUTH_REPLY`：处理 `auth` 请求响应
   - 确认不需要进行认证或响应无误后，修改状态为 `REPL_STATE_RECEIVE_PORT_REPLY`
 
     ```c
@@ -292,7 +292,7 @@
 
 <br>
 
-- REPL_STATE_RECEIVE_PORT_REPLY：处理 `port` 请求响应
+- `REPL_STATE_RECEIVE_PORT_REPLY`：处理 `port` 请求响应
   - 确认返回数据，并修改状态为 `REPL_STATE_RECEIVE_IP_REPLY`
 
     ```c
@@ -317,7 +317,7 @@
 
 <br>
 
-- REPL_STATE_RECEIVE_IP_REPLY：处理 `ip` 请求响应
+- `REPL_STATE_RECEIVE_IP_REPLY`：处理 `ip` 请求响应
   - 确认返回数据，并修改状态为 `REPL_STATE_RECEIVE_CAPA_REPLY`
 
     ```c
@@ -345,7 +345,7 @@
 
 <br>
 
-- REPL_STATE_RECEIVE_CAPA_REPLY：处理 `capa` 请求
+- `REPL_STATE_RECEIVE_CAPA_REPLY`：处理 `capa` 请求
   - 确认返回数据，并修改状态为 `REPL_STATE_SEND_PSYNC`，开始执行数据同步操作
 
     ```c
@@ -370,8 +370,8 @@
 
 ### 确认同步方式
 
-- REPL_STATE_SEND_PSYNC：开始执行主从复制，进行数据同步
-  - 从服务器调用 [slaveTryPartialResynchronization()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L2366) 函数，发送同步命令
+- `REPL_STATE_SEND_PSYNC`：开始执行主从复制，进行数据同步
+  - 从服务器调用 [`slaveTryPartialResynchronization()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L2366) 函数，发送同步命令
 
     ```c
     void syncWithMaster(connection *conn) {
@@ -422,8 +422,8 @@
 
 <br>
 
-- [syncCommand()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L910)：主服务器处理 `psync` 命令，根据入参情况，决定是全量复制还是增量复制
-  - 解析命令参数，确认是 `psync` 命令后，通过 [masterTryPartialResynchronization()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L715) 函数，判断能否执行增量复制，若可以，则提前结束
+- [`syncCommand()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L910)：主服务器处理 `psync` 命令，根据入参情况，决定是全量复制还是增量复制
+  - 解析命令参数，确认是 `psync` 命令后，通过 [`masterTryPartialResynchronization()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L715) 函数，判断能否执行增量复制，若可以，则提前结束
   - 若不能执行增量复制，或是传入的命令为老版本的 `sync` 命令，则执行全量复制
 
     ```c
@@ -454,7 +454,7 @@
     }
     ```
 
-  - 在 [masterTryPartialResynchronization()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L715) 函数中，在如下这些情况下，不会执行增量复制，转而执行全量复制：
+  - 在 [`masterTryPartialResynchronization()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L715) 函数中，在如下这些情况下，不会执行增量复制，转而执行全量复制：
     - 传入的 `master_replid` 与 `server.replid`、`server.replid2` 不一致
     - 传入的 `master_replid` 与 `server.replid` 不一致，与 `server.replid2` 一致，但是数据偏移量大于 `server.second_replid_offset`，即主从从的架构下，从节点与当前节点同属于一个主节点，但是从节点数据比当前节点更新（偏移量更大）
     - 不存在积压缓冲区，即 `server.repl_backlog`，或是数据偏移量小于或大于当前积压缓冲区范围
@@ -557,8 +557,8 @@
     ```
 
   - 上述判断通过后，代表可以复用
-    - 如果当前从服务器需要缓冲区数据，即 `CLIENT_REPL_RDBONLY` 标记未设置，则通过 [copyReplicaOutputBuffer()](https://github.com/redis/redis/blob/7.0.0/src/networking.c#L1161) 函数将副本从服务器缓冲区复制到当前从服务器
-    - 通过 [replicationSetupSlaveForFullResync()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L686) 函数，构造全量复制的请求响应（即 `+FULLRESYNC` 关键字）
+    - 如果当前从服务器需要缓冲区数据，即 `CLIENT_REPL_RDBONLY` 标记未设置，则通过 [`copyReplicaOutputBuffer()`](https://github.com/redis/redis/blob/7.0.0/src/networking.c#L1161) 函数将副本从服务器缓冲区复制到当前从服务器
+    - 通过 [`replicationSetupSlaveForFullResync()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L686) 函数，构造全量复制的请求响应（即 `+FULLRESYNC` 关键字）
 
     ```c
     /* SYNC and PSYNC command implementation. */
@@ -614,9 +614,9 @@
     ```
 
   - 场景三：没有正在执行的 `bgsave` 操作
-    - 如果当前主服务器支持无磁盘同步，从服务器支持网络同步，且开启了延迟配置，则延迟至定时函数 [replicationCron()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L3514) 中执行
+    - 如果当前主服务器支持无磁盘同步，从服务器支持网络同步，且开启了延迟配置，则延迟至定时函数 [`replicationCron()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L3514) 中执行
     - 如果当前存在其他活跃子进程，则同样延迟执行
-    - 其他情况下，通过 [startBgsaveForReplication()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L831) 函数触发一次 `bgsave` 操作，并最终同步给从服务器
+    - 其他情况下，通过 [`startBgsaveForReplication()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L831) 函数触发一次 `bgsave` 操作，并最终同步给从服务器
 
     ```c
     #define SLAVE_CAPA_EOF (1<<0)    /* Can parse the RDB EOF streaming format. */
@@ -654,10 +654,10 @@
     }
     ```
 
-  - 在 [startBgsaveForReplication()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L831) 函数中，启动了 `bgsave` 操作，用于生成 RDB 文件并同步给从服务器，同时还构造全量复制的请求响应（即 `+FULLRESYNC` 关键字）
-    - 根据当前同步方式是否为网络同步，调用不同的方法执行 `bgsave` 操作，即 [rdbSaveToSlavesSockets()](https://github.com/redis/redis/blob/7.0.0/src/rdb.c#L3361) 和 [rdbSaveBackground()](https://github.com/redis/redis/blob/7.0.0/src/rdb.c#L1464)
-    - 针对于 [rdbSaveBackground()](https://github.com/redis/redis/blob/7.0.0/src/rdb.c#L1464) 函数，与持久化方案执行逻辑相同。之后会在定时任务 [serverCron()](https://github.com/redis/redis/blob/7.0.0/src/server.c#L1157) 中，将结果发送给从服务器
-    - 此外，这里还针对于基于磁盘的同步方案，通过 [replicationSetupSlaveForFullResync()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L686) 函数发送全量复制的请求响应
+  - 在 [`startBgsaveForReplication()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L831) 函数中，启动了 `bgsave` 操作，用于生成 RDB 文件并同步给从服务器，同时还构造全量复制的请求响应（即 `+FULLRESYNC` 关键字）
+    - 根据当前同步方式是否为网络同步，调用不同的方法执行 `bgsave` 操作，即 [`rdbSaveToSlavesSockets()`](https://github.com/redis/redis/blob/7.0.0/src/rdb.c#L3361) 和 [`rdbSaveBackground()`](https://github.com/redis/redis/blob/7.0.0/src/rdb.c#L1464)
+    - 针对于 [`rdbSaveBackground()`](https://github.com/redis/redis/blob/7.0.0/src/rdb.c#L1464) 函数，与持久化方案执行逻辑相同。之后会在定时任务 [`serverCron()`](https://github.com/redis/redis/blob/7.0.0/src/server.c#L1157) 中，将结果发送给从服务器
+    - 此外，这里还针对于基于磁盘的同步方案，通过 [`replicationSetupSlaveForFullResync()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L686) 函数发送全量复制的请求响应
 
     ```c
     int startBgsaveForReplication(int mincapa, int req) {
@@ -688,7 +688,7 @@
     }
     ```
 
-  - 针对于 [rdbSaveToSlavesSockets()](https://github.com/redis/redis/blob/7.0.0/src/rdb.c#L3361) 函数，首先会针对于所有 `SLAVE_STATE_WAIT_BGSAVE_START` 状态下的从服务器，调用 [replicationSetupSlaveForFullResync()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L686) 函数发送全量复制的请求响应，然后通过子进程直接创建 RDB 文件，并刷新至管道中，最终在父进程中通过 [rdbPipeReadHandler()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L1444) 函数将数据发送给从服务器
+  - 针对于 [`rdbSaveToSlavesSockets()`](https://github.com/redis/redis/blob/7.0.0/src/rdb.c#L3361) 函数，首先会针对于所有 `SLAVE_STATE_WAIT_BGSAVE_START` 状态下的从服务器，调用 [`replicationSetupSlaveForFullResync()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L686) 函数发送全量复制的请求响应，然后通过子进程直接创建 RDB 文件，并刷新至管道中，最终在父进程中通过 [`rdbPipeReadHandler()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L1444) 函数将数据发送给从服务器
 
     ```c
     int rdbSaveToSlavesSockets(int req, rdbSaveInfo *rsi) {
@@ -726,8 +726,8 @@
 <br>
 
 - 解析 `psync` 响应数据
-  - [syncWithMaster()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L2530) 函数继续调用 [slaveTryPartialResynchronization()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L2366) 函数，`read_reply` 参数为 1，代表执行读逻辑
-  - [slaveTryPartialResynchronization()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L2366) 函数内部，获取主服务器的响应，并返回不同的枚举值
+  - [`syncWithMaster()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L2530) 函数继续调用 [`slaveTryPartialResynchronization()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L2366) 函数，`read_reply` 参数为 1，代表执行读逻辑
+  - [`slaveTryPartialResynchronization()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L2366) 函数内部，获取主服务器的响应，并返回不同的枚举值
 
     ```c
     void syncWithMaster(connection *conn) {
@@ -872,7 +872,7 @@
 
   - 其他情况下，即结果为 `PSYNC_FULLRESYNC`，或是 `sync` 命令重试成功，执行全量复制
     - 确认数据接收方式，如果需要磁盘缓存，则创建临时文件
-    - 更新读方法为 [readSyncBulkPayload()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L1801) 函数，用于接收 RDB 文件
+    - 更新读方法为 [`readSyncBulkPayload()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L1801) 函数，用于接收 RDB 文件
     - 修改状态为 `REPL_STATE_TRANSFER`
 
     ```c
@@ -914,8 +914,8 @@
 ### 数据传输
 
 - `RDB_CHILD_TYPE_SOCKET`：通过 socket 传输时，会在创建 RDB 文件时直接将数据发送给从服务器
-  - [rdbSaveToSlavesSockets()](https://github.com/redis/redis/blob/7.0.0/src/rdb.c#L3361) 函数，首先会针对于所有 `SLAVE_STATE_WAIT_BGSAVE_START` 状态下的从服务器，调用 [replicationSetupSlaveForFullResync()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L686) 函数发送全量复制的请求响应，并将符合条件的从服务器连接，额外进行存储
-  - 之后函数会通过子进程直接创建 RDB 文件，并刷新至管道中，最终在父进程中通过 [rdbPipeReadHandler()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L1444) 函数将数据发送给从服务器
+  - [`rdbSaveToSlavesSockets()`](https://github.com/redis/redis/blob/7.0.0/src/rdb.c#L3361) 函数，首先会针对于所有 `SLAVE_STATE_WAIT_BGSAVE_START` 状态下的从服务器，调用 [`replicationSetupSlaveForFullResync()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L686) 函数发送全量复制的请求响应，并将符合条件的从服务器连接，额外进行存储
+  - 之后函数会通过子进程直接创建 RDB 文件，并刷新至管道中，最终在父进程中通过 [`rdbPipeReadHandler()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L1444) 函数将数据发送给从服务器
 
     ```c
     int rdbSaveToSlavesSockets(int req, rdbSaveInfo *rsi) {
@@ -950,7 +950,7 @@
     }
     ```
 
-  - 在 [rdbSaveRioWithEOFMark()](https://github.com/redis/redis/blob/7.0.0/src/rdb.c#L1372) 函数内部，会给数据添加上额外标识，即以 `$EOF:` 关键字开头，紧跟一段长度为 `RDB_EOF_MARK_SIZE` 的随机字符，并同时以该字符结尾
+  - 在 [`rdbSaveRioWithEOFMark()`](https://github.com/redis/redis/blob/7.0.0/src/rdb.c#L1372) 函数内部，会给数据添加上额外标识，即以 `$EOF:` 关键字开头，紧跟一段长度为 `RDB_EOF_MARK_SIZE` 的随机字符，并同时以该字符结尾
 
     ```c
     #define RDB_EOF_MARK_SIZE 40
@@ -967,7 +967,7 @@
     }
     ```
 
-  - [rdbPipeReadHandler()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L1444) 函数内部将数据从管道读取至缓冲区中后，遍历从服务器连接，执行发送逻辑
+  - [`rdbPipeReadHandler()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L1444) 函数内部将数据从管道读取至缓冲区中后，遍历从服务器连接，执行发送逻辑
 
     ```c
     /* Called in diskless master, when there's data to read from the child's rdb pipe */
@@ -994,8 +994,8 @@
 
 - 主服务器定时任务
   - 在确认同步方式后，主服务器会同步触发一次 `bgsave` 的操作，并根据实际配置，决定是先保存为 RDB 文件，再传输文件，还是直接通过 socket 直接传输
-  - 在服务器的定时任务 [serverCron()](https://github.com/redis/redis/blob/7.0.0/src/server.c#L1157) 中，如果有活跃的子进程，会统一在 [checkChildrenDone()](https://github.com/redis/redis/blob/7.0.0/src/server.c#L1052) 函数中判断其执行情况（`waitpid()` 函数返回值不为 0，说明存在结束的子进程），并针对 `bgsave` 任务，调用 [backgroundSaveDoneHandler()](https://github.com/redis/redis/blob/7.0.0/src/rdb.c#L3324) 函数进行处理
-  - 最终，会调用 [updateSlavesWaitingBgsave()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L1544) 函数执行数据传输操作
+  - 在服务器的定时任务 [`serverCron()`](https://github.com/redis/redis/blob/7.0.0/src/server.c#L1157) 中，如果有活跃的子进程，会统一在 [`checkChildrenDone()`](https://github.com/redis/redis/blob/7.0.0/src/server.c#L1052) 函数中判断其执行情况（`waitpid()` 函数返回值不为 0，说明存在结束的子进程），并针对 `bgsave` 任务，调用 [`backgroundSaveDoneHandler()`](https://github.com/redis/redis/blob/7.0.0/src/rdb.c#L3324) 函数进行处理
+  - 最终，会调用 [`updateSlavesWaitingBgsave()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L1544) 函数执行数据传输操作
 
     ```c
     int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
@@ -1028,9 +1028,9 @@
     }
     ```
 
-  - [updateSlavesWaitingBgsave()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L1544) 函数内部遍历所有状态为 `SLAVE_STATE_WAIT_BGSAVE_END` 的从服务器，并区分其通过 socket 传输数据还是传输 RDB 文件，执行不同的策略
+  - [`updateSlavesWaitingBgsave()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L1544) 函数内部遍历所有状态为 `SLAVE_STATE_WAIT_BGSAVE_END` 的从服务器，并区分其通过 socket 传输数据还是传输 RDB 文件，执行不同的策略
     - 针对于 socket 传输，在 `bgsave` 任务的完成时，传输任务已经完成，此时将从服务器设置为在线状态
-    - 针对于 RDB 传输，设置网络连接的写回调为 [sendBulkToSlave()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L1344)，执行数据传输逻辑
+    - 针对于 RDB 传输，设置网络连接的写回调为 [`sendBulkToSlave()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L1344)，执行数据传输逻辑
 
     ```c
     void updateSlavesWaitingBgsave(int bgsaveerr, int type) {
@@ -1095,7 +1095,7 @@
     ```
 
 - 从服务器读取数据
-  - 在与主服务确认同步方式后，从服务器会将 [readSyncBulkPayload()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L1801) 函数设置为连接的读回调函数，并处理所收到的用于同步的数据
+  - 在与主服务确认同步方式后，从服务器会将 [`readSyncBulkPayload()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L1801) 函数设置为连接的读回调函数，并处理所收到的用于同步的数据
   - 函数内部首先解析数据格式，针对于 socket 格式数据，会以 `EOF:` 关键字开头，并紧跟长度为 `CONFIG_RUN_ID_SIZE` 的标记位（长度与 `RDB_EOF_MARK_SIZE` 相同），针对于 RDB 文件格式的数据，会解析出其文件长度
 
     ```c
@@ -1214,7 +1214,7 @@
     }
     ```
 
-  - 针对于无盘缓存，阻塞网络连接，然后通过 [rdbLoadRioWithLoadingCtx()](https://github.com/redis/redis/blob/7.0.0/src/rdb.c#L2893) 函数，直接将 RDB 数据加载至内存中，完成数据同步
+  - 针对于无盘缓存，阻塞网络连接，然后通过 [`rdbLoadRioWithLoadingCtx()`](https://github.com/redis/redis/blob/7.0.0/src/rdb.c#L2893) 函数，直接将 RDB 数据加载至内存中，完成数据同步
 
     ```c
     void readSyncBulkPayload(connection *conn) {
@@ -1232,7 +1232,7 @@
     }
     ```
 
-  - 针对于磁盘缓存，会通过 `fsync` 函数，强制将文件刷新至磁盘中，然后将文件重命名为正式的 RDB 文件，最后调用 [rdbLoad()](https://github.com/redis/redis/blob/7.0.0/src/rdb.c#L3246) 函数将 RDB 文件中的数据加载至内存中，完成数据同步
+  - 针对于磁盘缓存，会通过 `fsync` 函数，强制将文件刷新至磁盘中，然后将文件重命名为正式的 RDB 文件，最后调用 [`rdbLoad()`](https://github.com/redis/redis/blob/7.0.0/src/rdb.c#L3246) 函数将 RDB 文件中的数据加载至内存中，完成数据同步
 
     ```c
     void readSyncBulkPayload(connection *conn) {
@@ -1310,6 +1310,330 @@
         return;
     }
     ```
+
+## 命令传播
+
+在主从服务器建立连接后，主服务器后续的修改，会通过命令传播的方式同步至从服务器。即在函数中
+[`call()`](https://github.com/redis/redis/blob/7.0.0/src/server.c#L3226) 中，会判断当前指令是否对数据有影响（即是否为写操作，通过 `dirty` 字段判断），或者是否强制执行 AOF 或 Replication 操作，如果需要执行命令传播，则通过 [`alsoPropagate()`](https://github.com/redis/redis/blob/7.0.0/src/server.c#L3054) 函数将指令添加至 `server.also_propagate` 数组中。
+
+```c
+void call(client *c, int flags) {
+    ...
+    if (flags & CMD_CALL_PROPAGATE &&
+        (c->flags & CLIENT_PREVENT_PROP) != CLIENT_PREVENT_PROP &&
+        c->cmd->proc != execCommand &&
+        !(c->cmd->flags & CMD_MODULE))
+    {
+        int propagate_flags = PROPAGATE_NONE;
+
+        if (dirty) propagate_flags |= (PROPAGATE_AOF|PROPAGATE_REPL);
+
+        if (c->flags & CLIENT_FORCE_REPL) propagate_flags |= PROPAGATE_REPL;
+        if (c->flags & CLIENT_FORCE_AOF) propagate_flags |= PROPAGATE_AOF;
+
+        if (c->flags & CLIENT_PREVENT_REPL_PROP ||
+            !(flags & CMD_CALL_PROPAGATE_REPL))
+                propagate_flags &= ~PROPAGATE_REPL;
+        if (c->flags & CLIENT_PREVENT_AOF_PROP ||
+            !(flags & CMD_CALL_PROPAGATE_AOF))
+                propagate_flags &= ~PROPAGATE_AOF;
+
+        if (propagate_flags != PROPAGATE_NONE)
+            alsoPropagate(c->db->id,c->argv,c->argc,propagate_flags);
+    }
+    ...
+}
+
+void alsoPropagate(int dbid, robj **argv, int argc, int target) {
+    robj **argvcopy;
+    int j;
+
+    if (!shouldPropagate(target))
+        return;
+
+    argvcopy = zmalloc(sizeof(robj*)*argc);
+    for (j = 0; j < argc; j++) {
+        argvcopy[j] = argv[j];
+        incrRefCount(argv[j]);
+    }
+    redisOpArrayAppend(&server.also_propagate,dbid,argvcopy,argc,target);
+}
+```
+
+随后调用 [`afterCommand()`](https://github.com/redis/redis/blob/7.0.0/src/server.c#L3467) 函数，并最终调用 [`propagatePendingCommands()`](https://github.com/redis/redis/blob/7.0.0/src/server.c#L3124) 函数，该函数内部会遍历 `server.also_propagate` 数组来执行命令传播逻辑，如果数据元素数量大于一，还会通过 `multi` 与 `exec` 命令，将其包装为事务来执行。
+
+```c
+void call(client *c, int flags) {
+    ...
+    afterCommand(c);
+    ...
+}
+
+void afterCommand(client *c) {
+    if (!server.in_nested_call) {
+        if (server.core_propagates)
+            propagatePendingCommands();
+        ...
+    }
+}
+
+void propagatePendingCommands() {
+    ...
+    if (server.also_propagate.numops > 1 && !server.propagate_no_multi) {
+        /* We use the first command-to-propagate to set the dbid for MULTI,
+         * so that the SELECT will be propagated beforehand */
+        int multi_dbid = server.also_propagate.ops[0].dbid;
+        propagateNow(multi_dbid,&shared.multi,1,PROPAGATE_AOF|PROPAGATE_REPL);
+        multi_emitted = 1;
+    }
+
+    for (j = 0; j < server.also_propagate.numops; j++) {
+        rop = &server.also_propagate.ops[j];
+        serverAssert(rop->target);
+        propagateNow(rop->dbid,rop->argv,rop->argc,rop->target);
+    }
+
+    if (multi_emitted) {
+        /* We take the dbid from last command so that propagateNow() won't inject another SELECT */
+        int exec_dbid = server.also_propagate.ops[server.also_propagate.numops-1].dbid;
+        propagateNow(exec_dbid,&shared.exec,1,PROPAGATE_AOF|PROPAGATE_REPL);
+    }
+    ...
+}
+```
+
+在函数 [`propagateNow()`](https://github.com/redis/redis/blob/7.0.0/src/server.c#L3029) 中，会根据指定的 `target`，分别执行 AOF 和主从复制逻辑。
+
+```c
+static void propagateNow(int dbid, robj **argv, int argc, int target) {
+    if (!shouldPropagate(target))
+        return;
+
+    /* This needs to be unreachable since the dataset should be fixed during 
+     * client pause, otherwise data may be lost during a failover. */
+    serverAssert(!(areClientsPaused() && !server.client_pause_in_transaction));
+
+    if (server.aof_state != AOF_OFF && target & PROPAGATE_AOF)
+        feedAppendOnlyFile(dbid,argv,argc);
+    if (target & PROPAGATE_REPL)
+        replicationFeedSlaves(server.slaves,dbid,argv,argc);
+}
+```
+
+在 [`replicationFeedSlaves()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L418) 函数中，会将命令写入至复制缓冲区中，并同时发送至从服务器。
+
+- 预处理与从服务器的连接，设置写处理器，后续指令写入缓冲区后，会有该部分写处理器发送至从服务器
+
+    ```c
+    void replicationFeedSlaves(list *slaves, int dictid, robj **argv, int argc) {
+        ...
+        /* Must install write handler for all replicas first before feeding
+        * replication stream. */
+        prepareReplicasToWrite();
+        ...
+    }
+
+    int prepareReplicasToWrite(void) {
+        ...
+        while((ln = listNext(&li))) {
+            client *slave = ln->value;
+            if (!canFeedReplicaReplBuffer(slave)) continue;
+            if (prepareClientToWrite(slave) == C_ERR) continue;
+            prepared++;
+        }
+
+        return prepared;
+    }
+    ```
+
+  - [`prepareClientToWrite()`](https://github.com/redis/redis/blob/7.0.0/src/networking.c#L284) 函数内部会通过 [`putClientInPendingWriteQueue()`](https://github.com/redis/redis/blob/7.0.0/src/networking.c#L243) 函数将从服务器客户端添加至 `server.clients_pending_write` 列表中
+
+    ```c
+    int prepareClientToWrite(client *c) {
+        ...
+        if (!clientHasPendingReplies(c) && io_threads_op == IO_THREADS_OP_IDLE)
+            putClientInPendingWriteQueue(c);
+        ...
+    }
+
+    void putClientInPendingWriteQueue(client *c) {
+        if (!(c->flags & CLIENT_PENDING_WRITE) &&
+            (c->replstate == REPL_STATE_NONE ||
+            (c->replstate == SLAVE_STATE_ONLINE && !c->repl_start_cmd_stream_on_ack)))
+        {
+            c->flags |= CLIENT_PENDING_WRITE;
+            listAddNodeHead(server.clients_pending_write,c);
+        }
+    }
+    ```
+
+  - 在 [`aeMain()`](https://github.com/redis/redis/blob/7.0.0/src/ae.c#L493) 中，会调用 [`beforeSleep()`](https://github.com/redis/redis/blob/7.0.0/src/server.c#L1509) 函数，并最终调用至客户端处理函数
+
+    ```c
+    void aeMain(aeEventLoop *eventLoop) {
+        eventLoop->stop = 0;
+        while (!eventLoop->stop) {
+            aeProcessEvents(eventLoop, AE_ALL_EVENTS|AE_CALL_BEFORE_SLEEP|AE_CALL_AFTER_SLEEP);
+        }
+    }
+
+    int aeProcessEvents(aeEventLoop *eventLoop, int flags){
+        ...
+        if (eventLoop->beforesleep != NULL && flags & AE_CALL_BEFORE_SLEEP)
+            eventLoop->beforesleep(eventLoop);
+        ...
+    }
+
+    void beforeSleep(struct aeEventLoop *eventLoop) {
+        ...
+        if (ProcessingEventsWhileBlocked) {
+            ...
+            processed += handleClientsWithPendingWrites();
+            ...
+            return;
+        }
+        ...
+        /* Handle writes with pending output buffers. */
+        handleClientsWithPendingWritesUsingThreads();
+        ...
+    }
+    ```
+
+  - 在 [`handleClientsWithPendingWrites()`](https://github.com/redis/redis/blob/7.0.0/src/networking.c#L2007) 函数和 [`handleClientsWithPendingWritesUsingThreads()`](https://github.com/redis/redis/blob/7.0.0/src/networking.c#L4156) 函数中，会调用 [`installClientWriteHandler()`](https://github.com/redis/redis/blob/7.0.0/src/networking.c#L219) 函数，将 [`sendReplyToClient()`](https://github.com/redis/redis/blob/7.0.0/src/networking.c#L1998) 函数设置为写处理器，执行最终的数据发送逻辑
+
+    ```c
+    int handleClientsWithPendingWrites(void) {
+        ...
+        listRewind(server.clients_pending_write,&li);
+        while((ln = listNext(&li))) {
+            ...
+            /* If after the synchronous writes above we still have data to
+            * output to the client, we need to install the writable handler. */
+            if (clientHasPendingReplies(c)) {
+                installClientWriteHandler(c);
+            }
+        }
+        return processed;
+    }
+
+    int handleClientsWithPendingWritesUsingThreads(void) {
+        ...
+        if (server.io_threads_num == 1 || stopThreadedIOIfNeeded()) {
+            return handleClientsWithPendingWrites();
+        }
+        ...
+        listRewind(server.clients_pending_write,&li);
+        while((ln = listNext(&li))) {
+            ...
+            if (clientHasPendingReplies(c)) {
+                installClientWriteHandler(c);
+            }
+        }
+        ...
+    }
+
+    void installClientWriteHandler(client *c) {
+        ...
+        if (connSetWriteHandlerWithBarrier(c->conn, sendReplyToClient, ae_barrier) == C_ERR) {
+            freeClientAsync(c);
+        }
+    }
+
+    /* Write event handler. Just send data to the client. */
+    void sendReplyToClient(connection *conn) {
+        client *c = connGetPrivateData(conn);
+        writeToClient(c,1);
+    }
+    ```
+
+- 在数据库发生切换的情况下添加 `select` 指令
+
+    ```c
+    void replicationFeedSlaves(list *slaves, int dictid, robj **argv, int argc) {
+        ...
+        /* Send SELECT command to every slave if needed. */
+        if (server.slaveseldb != dictid) {
+            robj *selectcmd;
+
+            /* For a few DBs we have pre-computed SELECT command. */
+            if (dictid >= 0 && dictid < PROTO_SHARED_SELECT_CMDS) {
+                selectcmd = shared.select[dictid];
+            } else {
+                int dictid_len;
+
+                dictid_len = ll2string(llstr,sizeof(llstr),dictid);
+                selectcmd = createObject(OBJ_STRING,
+                    sdscatprintf(sdsempty(),
+                    "*2\r\n$6\r\nSELECT\r\n$%d\r\n%s\r\n",
+                    dictid_len, llstr));
+            }
+
+            feedReplicationBufferWithObject(selectcmd);
+
+            if (dictid < 0 || dictid >= PROTO_SHARED_SELECT_CMDS)
+                decrRefCount(selectcmd);
+
+            server.slaveseldb = dictid;
+        }
+        ...
+    }
+    ```
+
+- 添加长度信息
+
+    ```c
+    void replicationFeedSlaves(list *slaves, int dictid, robj **argv, int argc) {
+        ...
+        /* Add the multi bulk reply length. */
+        aux[0] = '*';
+        len = ll2string(aux+1,sizeof(aux)-1,argc);
+        aux[len+1] = '\r';
+        aux[len+2] = '\n';
+        feedReplicationBuffer(aux,len+3);
+        ...
+    }
+    ```
+
+- 遍历添加指令
+
+    ```c
+    void replicationFeedSlaves(list *slaves, int dictid, robj **argv, int argc) {
+        ...
+        for (j = 0; j < argc; j++) {
+            long objlen = stringObjectLen(argv[j]);
+
+            /* We need to feed the buffer with the object as a bulk reply
+            * not just as a plain string, so create the $..CRLF payload len
+            * and add the final CRLF */
+            aux[0] = '$';
+            len = ll2string(aux+1,sizeof(aux)-1,objlen);
+            aux[len+1] = '\r';
+            aux[len+2] = '\n';
+            feedReplicationBuffer(aux,len+3);
+            feedReplicationBufferWithObject(argv[j]);
+            feedReplicationBuffer(aux+len+1,2);
+        }
+    }
+    ```
+
+对于从服务器来说，在与主服务器连接并创建客户端时，最终会在 [`createClient()`](https://github.com/redis/redis/blob/7.0.0/src/networking.c#L120) 函数中，设置读回调为 [`readQueryFromClient()`](https://github.com/redis/redis/blob/7.0.0/src/networking.c#L2584)，即与正常处理命令的入口函数一致。
+
+```c
+client *createClient(connection *conn) {
+    client *c = zmalloc(sizeof(client));
+
+    if (conn) {
+        connEnableTcpNoDelay(conn);
+        if (server.tcpkeepalive)
+            connKeepAlive(conn,server.tcpkeepalive);
+        connSetReadHandler(conn, readQueryFromClient);
+        connSetPrivateData(conn, c);
+    }
+    ...
+}
+```
+
+## 部分复制
 
 ## Ref
 
