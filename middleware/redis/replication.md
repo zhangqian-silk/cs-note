@@ -1823,6 +1823,15 @@ int slaveTryPartialResynchronization(connection *conn, int read_reply) {
 }
 ```
 
+## Q & A
+
+1. 主服务器与从服务器执行数据同步时，新增的命令如何处理
+
+   - 在执行同步任务时，主服务器会将从服务器的状态修改为 `SLAVE_STATE_WAIT_BGSAVE_START`
+   - 新增的写命令会正常执行命令传播，将命令写入缓冲区
+   - 针对处于 `SLAVE_STATE_WAIT_BGSAVE_START` 状态下的从服务器，主服务器在命令传播阶段不会更新其写处理器，即仅将命令更新至缓冲区中，阻塞发送
+   - 在同步任务执行完成后，主服务器会额外更新一次从服务器的写处理器，将缓冲区中数据发送处理
+
 ## Ref
 
 - <https://redis.io/docs/latest/operate/oss_and_stack/management/replication/>
