@@ -489,7 +489,7 @@
     }
     ```
 
-  - 在确认需要全量同步后，修改一些参数配置，例如修改状态为 `SLAVE_STATE_WAIT_BGSAVE_START`，初始化积压缓冲区 `server.repl_backlog` 等
+  - 在确认需要全量同步后，修改一些参数配置，例如修改状态为 `SLAVE_STATE_WAIT_BGSAVE_START`，阻塞命令传播流程，初始化积压缓冲区 `server.repl_backlog` 等
 
     ```c
     /* SYNC and PSYNC command implementation. */
@@ -1029,7 +1029,7 @@
     ```
 
   - [`updateSlavesWaitingBgsave()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L1544) 函数内部遍历所有状态为 `SLAVE_STATE_WAIT_BGSAVE_END` 的从服务器，并区分其通过 socket 传输数据还是传输 RDB 文件，执行不同的策略
-    - 针对于 socket 传输，在 `bgsave` 任务的完成时，传输任务已经完成，此时将从服务器设置为在线状态
+    - 针对于 socket 传输，在 `bgsave` 任务的完成时，传输任务已经完成，此时将从服务器设置为在线状态，并在从服务器发送 `ack` 响应后，再调用 [`replicaStartCommandStream`()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L1284) 函数
     - 针对于 RDB 传输，设置网络连接的写回调为 [`sendBulkToSlave()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L1344)，执行数据传输逻辑
 
     ```c
@@ -1063,6 +1063,7 @@
   - 正式发送 RDB 文件前，先将文件大小发送至从服务器
   - 然后每次从文件中读取 `PROTO_IOBUF_LEN` 大小的数据存储在缓冲区中并发送至从服务器
   - 之后会多次调用该函数，直至发送完毕，并同样将从服务器设置为上限状态
+  - 最终完成发送逻辑后，会将从服务器设置为在线状态，并通过 [`replicaStartCommandStream`()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L1284) 函数，发送同步期间积压的命令
 
     ```c
     #define PROTO_IOBUF_LEN         (1024*16)  /* Generic I/O buffer size */
@@ -1294,7 +1295,7 @@
     }
     ```
 
-  - 针对于通过 socket 传输的场景，发送 ack 响应
+  - 针对于通过 socket 传输的场景，通过 [`replicationSendAck()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L3165) 函数发送 ack 响应。主服务器会在 [`replconfCommand()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L1138) 函数中进行处理，调用 [`replicaStartCommandStream`()](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L1284) 函数更新写回调
   - 针对于开启 AOF 的场景，主动触发一次 AOF 重写
 
     ```c
@@ -1309,11 +1310,40 @@
         if (server.aof_enabled) restartAOFAfterSYNC();
         return;
     }
+
+    void replicationSendAck(void) {
+        client *c = server.master;
+
+        if (c != NULL) {
+            c->flags |= CLIENT_MASTER_FORCE_REPLY;
+            addReplyArrayLen(c,3);
+            addReplyBulkCString(c,"REPLCONF");
+            addReplyBulkCString(c,"ACK");
+            addReplyBulkLongLong(c,c->reploff);
+            c->flags &= ~CLIENT_MASTER_FORCE_REPLY;
+        }
+    }
+
+    void replconfCommand(client *c) {
+        ...
+        for (j = 1; j < c->argc; j+=2) {
+            ...
+            if (!strcasecmp(c->argv[j]->ptr,"ack")) {
+                ...
+                if (c->repl_start_cmd_stream_on_ack && c->replstate == SLAVE_STATE_ONLINE)
+                    replicaStartCommandStream(c);
+                /* Note: this command does not reply anything! */
+                return;
+            }
+            ...
+        }
+        ...
+    }
     ```
 
 ## 命令传播
 
-在主从服务器建立连接后，主服务器后续的修改，会通过命令传播的方式同步至从服务器。即在函数中
+在主从服务器建立连接后，主服务器后续的修改，会通过命令传播的方式同步至从服务器。即在函数
 [`call()`](https://github.com/redis/redis/blob/7.0.0/src/server.c#L3226) 中，会判断当前指令是否对数据有影响（即是否为写操作，通过 `dirty` 字段判断），或者是否强制执行 AOF 或 Replication 操作，如果需要执行命令传播，则通过 [`alsoPropagate()`](https://github.com/redis/redis/blob/7.0.0/src/server.c#L3054) 函数将指令添加至 `server.also_propagate` 数组中。
 
 ```c
@@ -1423,6 +1453,7 @@ static void propagateNow(int dbid, robj **argv, int argc, int target) {
 在 [`replicationFeedSlaves()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L418) 函数中，会将命令写入至复制缓冲区中，并同时发送至从服务器。
 
 - 预处理与从服务器的连接，设置写处理器，后续指令写入缓冲区后，会有该部分写处理器发送至从服务器
+  - 如果此时主服务器与该从服务器正在执行同步任务，[`canFeedReplicaReplBuffer()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L198) 会返回 `false`，后续同步任务执行完成后，会更新写处理器，执行发送逻辑
 
     ```c
     void replicationFeedSlaves(list *slaves, int dictid, robj **argv, int argc) {
@@ -1443,6 +1474,16 @@ static void propagateNow(int dbid, robj **argv, int argc, int target) {
         }
 
         return prepared;
+    }
+
+    int canFeedReplicaReplBuffer(client *replica) {
+        /* Don't feed replicas that only want the RDB. */
+        if (replica->flags & CLIENT_REPL_RDBONLY) return 0;
+
+        /* Don't feed replicas that are still waiting for BGSAVE to start. */
+        if (replica->replstate == SLAVE_STATE_WAIT_BGSAVE_START) return 0;
+
+        return 1;
     }
     ```
 
