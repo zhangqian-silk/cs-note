@@ -1823,6 +1823,72 @@ int slaveTryPartialResynchronization(connection *conn, int read_reply) {
 }
 ```
 
+## 定时任务
+
+在 [`replicationCron()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L3514) 函数中，主、从服务器会定时执行一些策略来更新相关数据：
+
+- 偏移量更新：从服务器会定时触发 [`replicationSendAck()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L3165) 函数，将自己维护的缓冲区偏移量同步给主服务器
+
+    ```c
+    void replicationCron(void) {
+        ...
+        /* Send ACK to master from time to time.
+        * Note that we do not send periodic acks to masters that don't
+        * support PSYNC and replication offsets. */
+        if (server.masterhost && server.master &&
+            !(server.master->flags & CLIENT_PRE_PSYNC))
+            replicationSendAck();
+        ...
+    }
+
+    /* Send a REPLCONF ACK command to the master to inform it about the current
+     * processed offset. If we are not connected with a master, the command has
+     * no effects. */
+    void replicationSendAck(void) {
+        client *c = server.master;
+
+        if (c != NULL) {
+            c->flags |= CLIENT_MASTER_FORCE_REPLY;
+            addReplyArrayLen(c,3);
+            addReplyBulkCString(c,"REPLCONF");
+            addReplyBulkCString(c,"ACK");
+            addReplyBulkLongLong(c,c->reploff);
+            c->flags &= ~CLIENT_MASTER_FORCE_REPLY;
+        }
+    }
+    ```
+
+- 心跳：主服务器会秒级别定时向从服务器发送 `ping` 指令，检测其在线状态
+
+    ```c
+    void replicationCron(void) {
+        ...
+        /* First, send PING according to ping_slave_period. */
+        if ((replication_cron_loops % server.repl_ping_slave_period) == 0 &&
+            listLength(server.slaves))
+        {
+            /* Note that we don't send the PING if the clients are paused during
+            * a Redis Cluster manual failover: the PING we send will otherwise
+            * alter the replication offsets of master and slave, and will no longer
+            * match the one stored into 'mf_master_offset' state. */
+            int manual_failover_in_progress =
+                ((server.cluster_enabled &&
+                server.cluster->mf_end) ||
+                server.failover_end_time) &&
+                checkClientPauseTimeoutAndReturnIfPaused();
+
+            if (!manual_failover_in_progress) {
+                ping_argv[0] = shared.ping;
+                replicationFeedSlaves(server.slaves, server.slaveseldb,
+                    ping_argv, 1);
+            }
+        }
+        ...
+    }
+    ```
+
+
+
 ## Q & A
 
 1. 主服务器与从服务器执行数据同步时，新增的命令如何处理
