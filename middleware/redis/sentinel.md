@@ -722,8 +722,57 @@ void sentinelReceiveIsMasterDownReply(redisAsyncContext *c, void *reply, void *p
 }
 ```
 
+## 故障转移
+
+[`sentinelStartFailoverIfNeeded()`](https://github.com/redis/redis/blob/7.0.0/src/sentinel.c#L4857) 函数中会通过客观下线标记位和时间频率，判断是否要执行故障转移操作。
+
+```c
+int sentinelStartFailoverIfNeeded(sentinelRedisInstance *master) {
+    /* We can't failover if the master is not in O_DOWN state. */
+    if (!(master->flags & SRI_O_DOWN)) return 0;
+
+    /* Failover already in progress? */
+    if (master->flags & SRI_FAILOVER_IN_PROGRESS) return 0;
+
+    /* Last failover attempt started too little time ago? */
+    if (mstime() - master->failover_start_time <
+        master->failover_timeout*2)
+    {
+        ...
+        return 0;
+    }
+
+    sentinelStartFailover(master);
+    return 1;
+}
+```
+
+[`sentinelStartFailover()`](https://github.com/redis/redis/blob/7.0.0/src/sentinel.c#L4833) 函数会将故障转移状态机设置为 `SENTINEL_FAILOVER_STATE_WAIT_START`，修改故障相关的其他属性，开启故障转移流程。
+
+```c
+void sentinelStartFailover(sentinelRedisInstance *master) {
+    serverAssert(master->flags & SRI_MASTER);
+
+    master->failover_state = SENTINEL_FAILOVER_STATE_WAIT_START;
+    master->flags |= SRI_FAILOVER_IN_PROGRESS;
+    master->failover_epoch = ++sentinel.current_epoch;
+    sentinelEvent(LL_WARNING,"+new-epoch",master,"%llu",
+        (unsigned long long) sentinel.current_epoch);
+    sentinelEvent(LL_WARNING,"+try-failover",master,"%@");
+    master->failover_start_time = mstime()+rand()%SENTINEL_MAX_DESYNC;
+    master->failover_state_change_time = mstime();
+}
+```
+
+定时任务中的 [`sentinelFailoverStateMachine()`](https://github.com/redis/redis/blob/7.0.0/src/sentinel.c#L5216) 函数，会根据当前故障转移的状态，执行不同的逻辑，完成故障转移的全部流程。
+
+```c
+
+```
+
 ## Ref
 
 - <https://redis.io/docs/latest/operate/oss_and_stack/management/sentinel/>
 - <https://xiaolincoding.com/redis/cluster/sentinel.html>
-- <https://juejin.cn/post/7274940764517548087#heading-2>
+- <https://juejin.cn/post/7274940764517548087>
+- <https://juejin.cn/post/7281196961751203901>
