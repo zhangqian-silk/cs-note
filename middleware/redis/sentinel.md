@@ -2,10 +2,10 @@
 
 哨兵是提高 Redis 可用性的方案之一，主要包含如下能力：
 
-- 监控：监控主从节点是否正常工作
-- 通知：通过接口，通知监控到的异常情况
-- 自动故障转移：当主节点异常时，可以自动执行故障转移，从可用的从节点中选举出新的主节点，并完成切换工作
-- 提供配置：提供服务发现能力，可以实时的返回给客户端最新的主节点地址
+- **监控**：监控主从节点是否正常工作
+- **通知**：通过接口，通知监控到的异常情况
+- **自动故障转移**：当主节点异常时，可以自动执行故障转移，从可用的从节点中选举出新的主节点，并完成切换工作
+- **提供配置**：提供服务发现能力，可以实时的返回给客户端最新的主节点地址
 
 ## 初始化
 
@@ -747,7 +747,7 @@ int sentinelStartFailoverIfNeeded(sentinelRedisInstance *master) {
 }
 ```
 
-[`sentinelStartFailover()`](https://github.com/redis/redis/blob/7.0.0/src/sentinel.c#L4833) 函数会将故障转移状态机设置为 `SENTINEL_FAILOVER_STATE_WAIT_START`，修改故障相关的其他属性，开启故障转移流程。
+[`sentinelStartFailover()`](https://github.com/redis/redis/blob/7.0.0/src/sentinel.c#L4833) 函数会将故障转移状态机设置为 `SENTINEL_FAILOVER_STATE_WAIT_START`，修改故障相关的其他属性，触发相关事件，开启故障转移流程。
 
 ```c
 void sentinelStartFailover(sentinelRedisInstance *master) {
@@ -767,8 +767,178 @@ void sentinelStartFailover(sentinelRedisInstance *master) {
 定时任务中的 [`sentinelFailoverStateMachine()`](https://github.com/redis/redis/blob/7.0.0/src/sentinel.c#L5216) 函数，会根据当前故障转移的状态，执行不同的逻辑，完成故障转移的全部流程。
 
 ```c
+void sentinelFailoverStateMachine(sentinelRedisInstance *ri) {
+    serverAssert(ri->flags & SRI_MASTER);
 
+    if (!(ri->flags & SRI_FAILOVER_IN_PROGRESS)) return;
+
+    switch(ri->failover_state) {
+        case SENTINEL_FAILOVER_STATE_WAIT_START:
+            sentinelFailoverWaitStart(ri);
+            break;
+        case SENTINEL_FAILOVER_STATE_SELECT_SLAVE:
+            sentinelFailoverSelectSlave(ri);
+            break;
+        case SENTINEL_FAILOVER_STATE_SEND_SLAVEOF_NOONE:
+            sentinelFailoverSendSlaveOfNoOne(ri);
+            break;
+        case SENTINEL_FAILOVER_STATE_WAIT_PROMOTION:
+            sentinelFailoverWaitPromotion(ri);
+            break;
+        case SENTINEL_FAILOVER_STATE_RECONF_SLAVES:
+            sentinelFailoverReconfNextSlave(ri);
+            break;
+    }
+}
 ```
+
+### SENTINEL_FAILOVER_STATE_WAIT_START
+
+[`sentinelFailoverWaitStart()`](https://github.com/redis/redis/blob/7.0.0/src/sentinel.c#L4993) 函数主要包含以下逻辑：
+
+- **Leader 选举**：通过分布式共识机制确定当前故障转移的 Leader，确保只有一个 Sentinel 主导故障转移
+- **超时控制**：若非 Leader 且未强制触发，通过超时机制避免无意义的等待，保障系统及时回退
+- **状态机推进**：作为 Leader 时，推进故障转移状态至 “选择从节点”，为后续晋升从节点为主节点做准备
+- **容错与测试**：支持强制故障转移和模拟故障，增强系统健壮性和可测试性
+
+函数的详细逻辑如下所示：
+
+- **确定当前 Sentinel 是否成为 Leader**
+  - **调用 [`sentinelGetLeader()`](https://github.com/redis/redis/blob/7.0.0/src/sentinel.c#L4690) 函数**：通过 ri->failover_epoch（当前故障转移的纪元）计算集群中的 Leader。该函数通过 Raft 算法或 Sentinel 的投票机制确定 Leader 的 ID。
+  - **身份校验**：`isleader` 标志通过比对 leader 与当前 Sentinel 的 ID (`sentinel.myid`) 确认自身是否被选为 Leader。
+  - **释放资源**：使用 `sdsfree()` 函数释放动态字符串内存，避免泄漏。
+
+    ```c
+    void sentinelFailoverWaitStart(sentinelRedisInstance *ri) {
+        char *leader;
+        int isleader;
+
+        /* Check if we are the leader for the failover epoch. */
+        leader = sentinelGetLeader(ri, ri->failover_epoch);
+        isleader = leader && strcasecmp(leader,sentinel.myid) == 0;
+        sdsfree(leader);
+        ...
+    }
+    ```
+
+- **非 Leader 且非强制故障转移的处理**
+  - **条件判断**：如果当前 Sentinel 不是 Leader 且未设置 `SRI_FORCE_FAILOVER`（强制故障转移标志），则进入超时处理逻辑。
+  - **计算选举超时时间**：`election_timeout` 取 `sentinel_election_timeout`（默认值）与 `ri->failover_timeout`（配置的超时时间）的较小值，确保故障转移及时终止。
+  - **超时判定**：若当前时间 (`mstime()`) 与故障转移开始时间 (`ri->failover_start_time`) 的差值超过 `election_timeout`，则：
+    - 触发事件 `-failover-abort-not-elected`，记录日志。
+    - 调用 [`sentinelAbortFailover()`](https://github.com/redis/redis/blob/7.0.0/src/sentinel.c#L5245) 终止故障转移流程。
+  - **直接返回**：终止当前函数执行，不继续后续流程。
+
+    ```c
+    void sentinelFailoverWaitStart(sentinelRedisInstance *ri) {
+        ...
+        /* If I'm not the leader, and it is not a forced failover via
+        * SENTINEL FAILOVER, then I can't continue with the failover. */
+        if (!isleader && !(ri->flags & SRI_FORCE_FAILOVER)) {
+            mstime_t election_timeout = sentinel_election_timeout;
+
+            /* The election timeout is the MIN between SENTINEL_ELECTION_TIMEOUT
+            * and the configured failover timeout. */
+            if (election_timeout > ri->failover_timeout)
+                election_timeout = ri->failover_timeout;
+            /* Abort the failover if I'm not the leader after some time. */
+            if (mstime() - ri->failover_start_time > election_timeout) {
+                sentinelEvent(LL_WARNING,"-failover-abort-not-elected",ri,"%@");
+                sentinelAbortFailover(ri);
+            }
+            return;
+        }
+        ...
+    }
+    ```
+
+- **Leader 或强制故障转移的后续操作**
+  - **Leader 选举成功事件**：记录 `+elected-leader` 事件，表明当前 Sentinel 成为 Leader。
+  - **模拟故障注入（测试用）**：若设置 `SENTINEL_SIMFAILURE_CRASH_AFTER_ELECTION` 标志（模拟故障场景），调用 [`sentinelSimFailureCrash()`](https://github.com/redis/redis/blob/7.0.0/src/sentinel.c#L4623) 主动崩溃，用于测试 Sentinel 高可用性。
+  - **更新故障转移状态**：将 `ri->failover_state` 设置为 `SENTINEL_FAILOVER_STATE_SELECT_SLAVE`，表示进入 “选择从节点” 阶段。
+  - **记录状态变更时间**：更新 `ri->failover_state_change_time` 为当前时间，用于后续状态超时控制。
+  - **触发状态切换事件**：记录 `+failover-state-select-slave` 事件，通知进入从节点选择阶段。
+
+    ```c
+    void sentinelFailoverWaitStart(sentinelRedisInstance *ri) {
+        ...
+        sentinelEvent(LL_WARNING,"+elected-leader",ri,"%@");
+        if (sentinel.simfailure_flags & SENTINEL_SIMFAILURE_CRASH_AFTER_ELECTION)
+            sentinelSimFailureCrash();
+        ri->failover_state = SENTINEL_FAILOVER_STATE_SELECT_SLAVE;
+        ri->failover_state_change_time = mstime();
+        sentinelEvent(LL_WARNING,"+failover-state-select-slave",ri,"%@");
+    }
+    ```
+
+### SENTINEL_FAILOVER_STATE_SELECT_SLAVE
+
+[`sentinelFailoverSelectSlave`](https://github.com/redis/redis/blob/7.0.0/src/sentinel.c#L5026) 函数负责从当前主库（`ri`）的从库列表中选出一个最合适的从库，将其标记为待提升状态，并推进故障转移流程到下一阶段，详细介绍如下所示：
+
+- **选择候选从库**
+  - 调用 [`sentinelSelectSlave()`](https://github.com/redis/redis/blob/7.0.0/src/sentinel.c#L4947) 从主库 `ri` 的从库列表中筛选符合条件的从库
+
+    ```c
+    void sentinelFailoverSelectSlave(sentinelRedisInstance *ri) {
+        sentinelRedisInstance *slave = sentinelSelectSlave(ri);
+        ...
+    }
+    ```
+
+- **处理无可用从库的情况**
+  - 若 [`sentinelSelectSlave()`](https://github.com/redis/redis/blob/7.0.0/src/sentinel.c#L4947) 返回 `NULL`，表示没有合适的从库。
+  - 记录警告日志 `-failover-abort-no-good-slave`，表明因无可用从库导致故障转移中止。
+  - 调用 [`sentinelAbortFailover()`](https://github.com/redis/redis/blob/7.0.0/src/sentinel.c#L5245) 终止故障转移流程，重置状态并清理相关标志。
+
+    ```c
+    void sentinelFailoverSelectSlave(sentinelRedisInstance *ri) {
+        ...
+        if (slave == NULL) {
+            sentinelEvent(LL_WARNING,"-failover-abort-no-good-slave",ri,"%@");
+            sentinelAbortFailover(ri);
+        } else {
+            ...
+        }
+    }
+    ```
+
+- **处理成功选中从库的情况**
+  - 记录事件：输出 `+selected-slave` 日志，标记选中的从库。
+  - 设置提升标志：为从库添加 `SRI_PROMOTED` 标志，防止其被重复选中。
+  - 更新主库状态：
+    - `ri->promoted_slave` 指向被选中的从库，记录待提升的目标。
+    - 将故障转移状态推进到 `SENTINEL_FAILOVER_STATE_SEND_SLAVEOF_NOONE`，表示下一步将向该从库发送 `SLAVEOF NO ONE` 命令，使其停止复制并成为新主库。
+    - 更新状态变更时间戳 `failover_state_change_time`，用于后续超时判断。
+  - 记录状态变更：输出 `+failover-state-send-slaveof-noone` 日志，标志进入新阶段。
+
+    ```c
+    void sentinelFailoverSelectSlave(sentinelRedisInstance *ri) {
+        ...
+        if (slave == NULL) {
+            ...
+        } else {
+            sentinelEvent(LL_WARNING,"+selected-slave",slave,"%@");
+            slave->flags |= SRI_PROMOTED;
+            ri->promoted_slave = slave;
+            ri->failover_state = SENTINEL_FAILOVER_STATE_SEND_SLAVEOF_NOONE;
+            ri->failover_state_change_time = mstime();
+            sentinelEvent(LL_NOTICE,"+failover-state-send-slaveof-noone",
+                slave, "%@");
+        }
+    }
+    ```
+
+### SENTINEL_FAILOVER_STATE_SEND_SLAVEOF_NOONE
+
+sentinelFailoverSendSlaveOfNoOne(ri);
+
+### SENTINEL_FAILOVER_STATE_WAIT_PROMOTION
+
+sentinelFailoverWaitPromotion(ri);
+
+### SENTINEL_FAILOVER_STATE_RECONF_SLAVES
+
+sentinelFailoverReconfNextSlave(ri);
 
 ## Ref
 
