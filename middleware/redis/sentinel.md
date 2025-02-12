@@ -930,7 +930,62 @@ void sentinelFailoverStateMachine(sentinelRedisInstance *ri) {
 
 ### SENTINEL_FAILOVER_STATE_SEND_SLAVEOF_NOONE
 
-sentinelFailoverSendSlaveOfNoOne(ri);
+[`sentinelFailoverSendSlaveOfNoOne()`](https://github.com/redis/redis/blob/7.0.0/src/sentinel.c#L5045) 函数负责处理指定的从节点（`ri->promoted_slave`），停止复制逻辑，使其独立为主节点。
+
+- 检查从节点连接状态
+  - 如果已经断开连接，则直接结束，等待下一次重试
+  - 如果已经断开连接且超时，则调用 [`sentinelAbortFailover()`](https://github.com/redis/redis/blob/7.0.0/src/sentinel.c#L5245) 终止故障转移流程
+
+    ```c
+    void sentinelFailoverSendSlaveOfNoOne(sentinelRedisInstance *ri) {
+        int retval;
+
+        /* We can't send the command to the promoted slave if it is now
+        * disconnected. Retry again and again with this state until the timeout
+        * is reached, then abort the failover. */
+        if (ri->promoted_slave->link->disconnected) {
+            if (mstime() - ri->failover_state_change_time > ri->failover_timeout) {
+                sentinelEvent(LL_WARNING,"-failover-abort-slave-timeout",ri,"%@");
+                sentinelAbortFailover(ri);
+            }
+            return;
+        }
+        ...
+    }
+    ```
+
+- 发送 `SLAVEOF NO ONE` 命令
+  - 调用 [`sentinelSendSlaveOf()`](https://github.com/redis/redis/blob/7.0.0/src/sentinel.c#L4765) 函数发送命令
+  - 参数 NULL 表示发送 `SLAVEOF NO ONE`，使从节点独立为主节点。
+  - 若发送失败，直接返回，等待后续重试。
+
+    ```c
+    void sentinelFailoverSendSlaveOfNoOne(sentinelRedisInstance *ri) {
+        ...
+        /* Send SLAVEOF NO ONE command to turn the slave into a master.
+        * We actually register a generic callback for this command as we don't
+        * really care about the reply. We check if it worked indirectly observing
+        * if INFO returns a different role (master instead of slave). */
+        retval = sentinelSendSlaveOf(ri->promoted_slave,NULL);
+        if (retval != C_OK) return;
+        ...
+    }
+    ```
+
+- 更新故障转移状态
+  - 记录事件：输出`+failover-state-wait-promotion` 日志
+  - 将状态变更为 `SENTINEL_FAILOVER_STATE_WAIT_PROMOTION`，表示等待从节点真正晋升为主节点。
+  - 更新状态变更时间戳，用于后续超时判断。
+
+    ```c
+    void sentinelFailoverSendSlaveOfNoOne(sentinelRedisInstance *ri) {
+        ...
+        sentinelEvent(LL_NOTICE, "+failover-state-wait-promotion",
+            ri->promoted_slave,"%@");
+        ri->failover_state = SENTINEL_FAILOVER_STATE_WAIT_PROMOTION;
+        ri->failover_state_change_time = mstime();
+    }
+    ```
 
 ### SENTINEL_FAILOVER_STATE_WAIT_PROMOTION
 
