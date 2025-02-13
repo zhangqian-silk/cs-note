@@ -903,13 +903,11 @@ void sentinelFailoverStateMachine(sentinelRedisInstance *ri) {
     ```
 
 - **处理成功选中从库的情况**
-  - 记录事件：输出 `+selected-slave` 日志，标记选中的从库。
   - 设置提升标志：为从库添加 `SRI_PROMOTED` 标志，防止其被重复选中。
   - 更新主库状态：
     - `ri->promoted_slave` 指向被选中的从库，记录待提升的目标。
     - 将故障转移状态推进到 `SENTINEL_FAILOVER_STATE_SEND_SLAVEOF_NOONE`，表示下一步将向该从库发送 `SLAVEOF NO ONE` 命令，使其停止复制并成为新主库。
     - 更新状态变更时间戳 `failover_state_change_time`，用于后续超时判断。
-  - 记录状态变更：输出 `+failover-state-send-slaveof-noone` 日志，标志进入新阶段。
 
     ```c
     void sentinelFailoverSelectSlave(sentinelRedisInstance *ri) {
@@ -930,9 +928,9 @@ void sentinelFailoverStateMachine(sentinelRedisInstance *ri) {
 
 ### SENTINEL_FAILOVER_STATE_SEND_SLAVEOF_NOONE
 
-[`sentinelFailoverSendSlaveOfNoOne()`](https://github.com/redis/redis/blob/7.0.0/src/sentinel.c#L5045) 函数负责处理指定的从节点（`ri->promoted_slave`），停止复制逻辑，使其独立为主节点。
+[`sentinelFailoverSendSlaveOfNoOne()`](https://github.com/redis/redis/blob/7.0.0/src/sentinel.c#L5045) 函数负责处理指定的从节点（`ri->promoted_slave`），停止复制逻辑，并发送 `SLAVEOF NO ONE` 命令，使其晋升为主节点。
 
-- 检查从节点连接状态
+- **检查从节点连接状态**
   - 如果已经断开连接，则直接结束，等待下一次重试
   - 如果已经断开连接且超时，则调用 [`sentinelAbortFailover()`](https://github.com/redis/redis/blob/7.0.0/src/sentinel.c#L5245) 终止故障转移流程
 
@@ -954,7 +952,7 @@ void sentinelFailoverStateMachine(sentinelRedisInstance *ri) {
     }
     ```
 
-- 发送 `SLAVEOF NO ONE` 命令
+- **发送 `SLAVEOF NO ONE` 命令**
   - 调用 [`sentinelSendSlaveOf()`](https://github.com/redis/redis/blob/7.0.0/src/sentinel.c#L4765) 函数发送命令
   - 参数 NULL 表示发送 `SLAVEOF NO ONE`，使从节点独立为主节点。
   - 若发送失败，直接返回，等待后续重试。
@@ -972,8 +970,47 @@ void sentinelFailoverStateMachine(sentinelRedisInstance *ri) {
     }
     ```
 
-- 更新故障转移状态
-  - 记录事件：输出`+failover-state-wait-promotion` 日志
+  - 在 [`sentinelRefreshInstanceInfo()`](https://github.com/redis/redis/blob/7.0.0/src/sentinel.c#L2512) 函数中，会判断从节点是否已经变为主节点
+  - 如果状态已经发生改变，则
+
+    ```c
+    void sentinelRefreshInstanceInfo(sentinelRedisInstance *ri, const char *info) {
+        ...
+        /* Handle slave -> master role switch. */
+        if ((ri->flags & SRI_SLAVE) && role == SRI_MASTER) {
+            /* If this is a promoted slave we can change state to the
+            * failover state machine. */
+            if ((ri->flags & SRI_PROMOTED) &&
+                (ri->master->flags & SRI_FAILOVER_IN_PROGRESS) &&
+                (ri->master->failover_state ==
+                    SENTINEL_FAILOVER_STATE_WAIT_PROMOTION))
+            {
+                /* Now that we are sure the slave was reconfigured as a master
+                * set the master configuration epoch to the epoch we won the
+                * election to perform this failover. This will force the other
+                * Sentinels to update their config (assuming there is not
+                * a newer one already available). */
+                ri->master->config_epoch = ri->master->failover_epoch;
+                ri->master->failover_state = SENTINEL_FAILOVER_STATE_RECONF_SLAVES;
+                ri->master->failover_state_change_time = mstime();
+                sentinelFlushConfig();
+                sentinelEvent(LL_WARNING,"+promoted-slave",ri,"%@");
+                if (sentinel.simfailure_flags &
+                    SENTINEL_SIMFAILURE_CRASH_AFTER_PROMOTION)
+                    sentinelSimFailureCrash();
+                sentinelEvent(LL_WARNING,"+failover-state-reconf-slaves",
+                    ri->master,"%@");
+                sentinelCallClientReconfScript(ri->master,SENTINEL_LEADER,
+                    "start",ri->master->addr,ri->addr);
+                sentinelForceHelloUpdateForMaster(ri->master);
+            } 
+            ...
+        }
+        ...
+    }
+    ```
+
+- **更新故障转移状态**
   - 将状态变更为 `SENTINEL_FAILOVER_STATE_WAIT_PROMOTION`，表示等待从节点真正晋升为主节点。
   - 更新状态变更时间戳，用于后续超时判断。
 
@@ -989,11 +1026,251 @@ void sentinelFailoverStateMachine(sentinelRedisInstance *ri) {
 
 ### SENTINEL_FAILOVER_STATE_WAIT_PROMOTION
 
-sentinelFailoverWaitPromotion(ri);
+[`sentinelFailoverWaitPromotion()`](https://github.com/redis/redis/blob/7.0.0/src/sentinel.c#L5073) 函数仅处理超时逻辑，实例的状态变更，即从 `SENTINEL_FAILOVER_STATE_WAIT_PROMOTION` 变为 `SENTINEL_FAILOVER_STATE_RECONF_SLAVES`，由被晋升的从节点在处理完成 `SLAVEOF NO ONE` 命令后来处理。
+
+```c
+void sentinelFailoverWaitPromotion(sentinelRedisInstance *ri) {
+    /* Just handle the timeout. Switching to the next state is handled
+     * by the function parsing the INFO command of the promoted slave. */
+    if (mstime() - ri->failover_state_change_time > ri->failover_timeout) {
+        sentinelEvent(LL_WARNING,"-failover-abort-slave-timeout",ri,"%@");
+        sentinelAbortFailover(ri);
+    }
+}
+```
 
 ### SENTINEL_FAILOVER_STATE_RECONF_SLAVES
 
-sentinelFailoverReconfNextSlave(ri);
+[`sentinelFailoverReconfNextSlave()`](https://github.com/redis/redis/blob/7.0.0/src/sentinel.c#L5145) 负责更新从节点配置，通过 `SLAVEOF` 命令，并行将旧节点的所有从节点（除新主节点外）重新指向新主节点。
+
+如果因为超时或其他原因导致处理失败，后续会在 `INFO` 命令中，继续进行处理。
+
+- **统计当前正在处理的从节点数量**
+  - 通过循环，统计所有处于已发送配置指令(`SRI_RECONF_SENT`)或配置进行中(`SRI_RECONF_INPROG`)的从节点数量
+
+    ```c
+    void sentinelFailoverReconfNextSlave(sentinelRedisInstance *master) {
+        dictIterator *di;
+        dictEntry *de;
+        int in_progress = 0;
+
+        di = dictGetIterator(master->slaves);
+        while((de = dictNext(di)) != NULL) {
+            sentinelRedisInstance *slave = dictGetVal(de);
+
+            if (slave->flags & (SRI_RECONF_SENT|SRI_RECONF_INPROG))
+                in_progress++;
+        }
+        dictReleaseIterator(di);
+        ...
+    }
+    ```
+
+- **并行发送 `SLAVEOF` 命令**
+  - 限制并行处理的最大数量为 `master->parallel_syncs`
+  - 跳过已被提升为新主节点(`SRI_PROMOTED`)或已完成配置(`SRI_RECONF_DONE`)的从节点
+
+    ```c
+    void sentinelFailoverReconfNextSlave(sentinelRedisInstance *master) {
+        ...
+        di = dictGetIterator(master->slaves);
+        while(in_progress < master->parallel_syncs &&
+            (de = dictNext(di)) != NULL)
+        {
+            sentinelRedisInstance *slave = dictGetVal(de);
+            int retval;
+
+            /* Skip the promoted slave, and already configured slaves. */
+            if (slave->flags & (SRI_PROMOTED|SRI_RECONF_DONE)) continue;
+            ...
+        }
+        dictReleaseIterator(di);
+        ...
+    }
+    ```
+
+  - 超时处理，取消 `SRI_RECONF_SENT` 标记，并设置 `SRI_RECONF_DONE` 标记
+
+    ```c
+    void sentinelFailoverReconfNextSlave(sentinelRedisInstance *master) {
+        ...
+        while(in_progress < master->parallel_syncs &&
+            (de = dictNext(di)) != NULL)
+        {
+            ...
+            /* If too much time elapsed without the slave moving forward to
+            * the next state, consider it reconfigured even if it is not.
+            * Sentinels will detect the slave as misconfigured and fix its
+            * configuration later. */
+            if ((slave->flags & SRI_RECONF_SENT) &&
+                (mstime() - slave->slave_reconf_sent_time) >
+                sentinel_slave_reconf_timeout)
+            {
+                sentinelEvent(LL_NOTICE,"-slave-reconf-sent-timeout",slave,"%@");
+                slave->flags &= ~SRI_RECONF_SENT;
+                slave->flags |= SRI_RECONF_DONE;
+            }
+            ...
+        }
+        ...
+    }
+    ```
+
+  - 跳过已经开始处理或断联的节点
+
+    ```c
+    void sentinelFailoverReconfNextSlave(sentinelRedisInstance *master) {
+        ...
+        di = dictGetIterator(master->slaves);
+        while(in_progress < master->parallel_syncs &&
+            (de = dictNext(di)) != NULL)
+        {
+            ...
+            /* Nothing to do for instances that are disconnected or already
+            * in RECONF_SENT state. */
+            if (slave->flags & (SRI_RECONF_SENT|SRI_RECONF_INPROG)) continue;
+            if (slave->link->disconnected) continue;
+            ...
+        }
+        ...
+    }
+    ```
+
+  - 发送 `SLAVEOF` 命令，将其连接至新主节点
+  - 修改 `SRI_RECONF_SENT` 标记位
+  - 记录发送时间，并增加计数器
+
+    ```c
+    void sentinelFailoverReconfNextSlave(sentinelRedisInstance *master) {
+        ...
+        di = dictGetIterator(master->slaves);
+        while(in_progress < master->parallel_syncs &&
+            (de = dictNext(di)) != NULL)
+        {
+            ...
+            /* Send SLAVEOF <new master>. */
+            retval = sentinelSendSlaveOf(slave,master->promoted_slave->addr);
+            if (retval == C_OK) {
+                slave->flags |= SRI_RECONF_SENT;
+                slave->slave_reconf_sent_time = mstime();
+                sentinelEvent(LL_NOTICE,"+slave-reconf-sent",slave,"%@");
+                in_progress++;
+            }
+        }
+        ...
+    }
+    ```
+
+- **检测故障转移流程是否结束**
+  - 调用 [`sentinelFailoverDetectEnd()`](https://github.com/redis/redis/blob/7.0.0/src/sentinel.c#L5082) 来检测故障转移是否完成
+  - 函数内部会综合主从节点相关状态，判断流程是否结束，如果结束，会进一步推进状态变更
+
+    ```c
+    void sentinelFailoverReconfNextSlave(sentinelRedisInstance *master) {
+        ...
+        /* Check if all the slaves are reconfigured and handle timeout. */
+        sentinelFailoverDetectEnd(master);
+    }
+    ```
+
+  - 判断主节点状态，确保主节点存在且连接正常
+
+    ```c
+    void sentinelFailoverDetectEnd(sentinelRedisInstance *master) {
+        int not_reconfigured = 0, timeout = 0;
+        dictIterator *di;
+        dictEntry *de;
+        mstime_t elapsed = mstime() - master->failover_state_change_time;
+
+        /* We can't consider failover finished if the promoted slave is
+        * not reachable. */
+        if (master->promoted_slave == NULL ||
+            master->promoted_slave->flags & SRI_S_DOWN) return;
+        ...
+    }
+    ```
+
+  - 检测从节点，统计未完成配置的节点数量(`not_reconfigured`)
+  - 跳过新主节点(`SRI_PROMOTED`)、已完成配置的节点(`SRI_RECONF_DONE`)和主观下线的节点(`SRI_S_DOWN`)
+
+    ```c
+    void sentinelFailoverDetectEnd(sentinelRedisInstance *master) {
+        ...
+        /* The failover terminates once all the reachable slaves are properly
+        * configured. */
+        di = dictGetIterator(master->slaves);
+        while((de = dictNext(di)) != NULL) {
+            sentinelRedisInstance *slave = dictGetVal(de);
+
+            if (slave->flags & (SRI_PROMOTED|SRI_RECONF_DONE)) continue;
+            if (slave->flags & SRI_S_DOWN) continue;
+            not_reconfigured++;
+        }
+        dictReleaseIterator(di);
+        ...
+    }
+    ```
+
+  - 超时判断，如果大于配置时间(`master->failover_timeout`)，则强制结束
+
+    ```c
+    void sentinelFailoverDetectEnd(sentinelRedisInstance *master) {
+        ...
+        /* Force end of failover on timeout. */
+        if (elapsed > master->failover_timeout) {
+            not_reconfigured = 0;
+            timeout = 1;
+            sentinelEvent(LL_WARNING,"+failover-end-for-timeout",master,"%@");
+        }
+        ...
+    }
+    ```
+
+  - 如果流程已经结束(`not_reconfigured == 0`)，则更新状态为 `SENTINEL_FAILOVER_STATE_UPDATE_CONFIG`，并记录变更时间
+
+    ```c
+    void sentinelFailoverDetectEnd(sentinelRedisInstance *master) {
+        ...
+        if (not_reconfigured == 0) {
+            sentinelEvent(LL_WARNING,"+failover-end",master,"%@");
+            master->failover_state = SENTINEL_FAILOVER_STATE_UPDATE_CONFIG;
+            master->failover_state_change_time = mstime();
+        }
+        ...
+    }
+    ```
+
+  - 超时补偿，向所有未发送配置的节点，发送 `SLAVEOF` 命令
+  - 如果发送成功，则修改从节点的 `SRI_RECONF_SENT` 标记位
+
+    ```c
+    void sentinelFailoverDetectEnd(sentinelRedisInstance *master) {
+        ...
+        /* If I'm the leader it is a good idea to send a best effort SLAVEOF
+        * command to all the slaves still not reconfigured to replicate with
+        * the new master. */
+        if (timeout) {
+            dictIterator *di;
+            dictEntry *de;
+
+            di = dictGetIterator(master->slaves);
+            while((de = dictNext(di)) != NULL) {
+                sentinelRedisInstance *slave = dictGetVal(de);
+                int retval;
+
+                if (slave->flags & (SRI_PROMOTED|SRI_RECONF_DONE|SRI_RECONF_SENT)) continue;
+                if (slave->link->disconnected) continue;
+
+                retval = sentinelSendSlaveOf(slave,master->promoted_slave->addr);
+                if (retval == C_OK) {
+                    sentinelEvent(LL_NOTICE,"+slave-reconf-sent-be",slave,"%@");
+                    slave->flags |= SRI_RECONF_SENT;
+                }
+            }
+            dictReleaseIterator(di);
+        }
+    }
+    ```
 
 ## Ref
 
