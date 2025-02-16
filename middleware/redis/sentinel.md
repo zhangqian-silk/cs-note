@@ -1274,7 +1274,7 @@ void sentinelFailoverWaitPromotion(sentinelRedisInstance *ri) {
 
 ## Ref
 
-- <https://redis.io/docs/latest/operate/oss_and_stack/management/sentinel/>
-- <https://xiaolincoding.com/redis/cluster/sentinel.html>
-- <https://juejin.cn/post/7274940764517548087>
-- <https://juejin.cn/post/7281196961751203901>
+- [High availability with Redis Sentinel](https://redis.io/docs/latest/operate/oss_and_stack/management/sentinel/)
+- [为什么要有哨兵？](https://xiaolincoding.com/redis/cluster/sentinel.html)
+- [Redis Sentinel 服务监控源码全流程剖析](https://juejin.cn/post/7274940764517548087)
+- [源码看 Redis Sentinel 如何实现故障恢复（failover）](https://juejin.cn/post/7281196961751203901)

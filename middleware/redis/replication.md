@@ -1887,8 +1887,6 @@ int slaveTryPartialResynchronization(connection *conn, int read_reply) {
     }
     ```
 
-
-
 ## Q & A
 
 1. 主服务器与从服务器执行数据同步时，新增的命令如何处理
@@ -1900,6 +1898,6 @@ int slaveTryPartialResynchronization(connection *conn, int read_reply) {
 
 ## Ref
 
-- <https://redis.io/docs/latest/operate/oss_and_stack/management/replication/>
-- <https://xiaolincoding.com/redis/cluster/master_slave_replication.html>
-- <https://blog.csdn.net/lcn29/article/details/142069696>
+- [Redis replication](https://redis.io/docs/latest/operate/oss_and_stack/management/replication/)
+- [主从复制是怎么实现的？](https://xiaolincoding.com/redis/cluster/master_slave_replication.html)
+- [【Redis】主从复制 - 源码](https://blog.csdn.net/lcn29/article/details/142069696)
