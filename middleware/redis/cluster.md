@@ -1332,7 +1332,269 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
 从节点自治：从节点主动参与故障转移决策，提升集群可用性。
 通过以上流程，clusterCron 确保了 Redis 集群的高可用性、数据一致性及资源高效利用。
 
+- **初始化**
+  - 调用 [`clusterUpdateMyselfHostname()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L601) 函数更新主机名
+  - 设置握手超时时间 `handshake_timeout`，并限制最少为 1000 ms
 
+    ```c
+    void clusterCron(void) {
+        ...
+        clusterUpdateMyselfHostname();
+
+        /* The handshake timeout is the time after which a handshake node that was
+        * not turned into a normal node is removed from the nodes. Usually it is
+        * just the NODE_TIMEOUT value, but when NODE_TIMEOUT is too small we use
+        * the value of 1 second. */
+        handshake_timeout = server.cluster_node_timeout;
+        if (handshake_timeout < 1000) handshake_timeout = 1000;
+        ...
+    }
+    ```
+
+- **维护节点连接**
+  - 调用 [`clusterNodeCronResizeBuffers()](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L3935) 函数调整连接的缓冲区，仅可能减小
+  - 调用 [`clusterNodeCronFreeLinkOnBufferLimitReached()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L3955) 函数释放缓冲区过大的连接
+  - 调用 [`clusterNodeCronUpdateClusterLinksMemUsage()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L3969) 函数统计集群连接内存占用情况
+  - 调用 [`clusterNodeCronHandleReconnect()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L3887) 函数，针对失联的场景，重新建立连接
+
+    ```c
+    void clusterCron(void) {
+        ...
+        while((de = dictNext(di)) != NULL) {
+            clusterNode *node = dictGetVal(de);
+            /* The sequence goes:
+            * 1. We try to shrink link buffers if possible.
+            * 2. We free the links whose buffers are still oversized after possible shrinking.
+            * 3. We update the latest memory usage of cluster links.
+            * 4. We immediately attempt reconnecting after freeing links.
+            */
+            clusterNodeCronResizeBuffers(node);
+            clusterNodeCronFreeLinkOnBufferLimitReached(node);
+            clusterNodeCronUpdateClusterLinksMemUsage(node);
+            if(clusterNodeCronHandleReconnect(node, handshake_timeout, now)) continue;
+        }
+        ...
+    }
+    ```
+
+- **随机心跳**
+  - 每十次定时任务中，随机选取 5 个节点，向 `pong_received` 最小，即最早收到 `pong` 消息的节点发送 `ping` 消息
+
+    ```c
+    void clusterCron(void) {
+        ...
+        if (!(iteration % 10)) {
+            int j;
+            for (j = 0; j < 5; j++) {
+                de = dictGetRandomKey(server.cluster->nodes);
+                clusterNode *this = dictGetVal(de);
+
+                if (this->link == NULL || this->ping_sent != 0) continue;
+                if (this->flags & (CLUSTER_NODE_MYSELF|CLUSTER_NODE_HANDSHAKE))
+                    continue;
+                if (min_pong_node == NULL || min_pong > this->pong_received) {
+                    min_pong_node = this;
+                    min_pong = this->pong_received;
+                }
+            }
+            if (min_pong_node) {
+                serverLog(LL_DEBUG,"Pinging node %.40s", min_pong_node->name);
+                clusterSendPing(min_pong_node->link, CLUSTERMSG_TYPE_PING);
+            }
+        }
+        ...
+    }
+    ```
+
+- **统计主从状态**
+  - 统计孤儿主节点数量（`orphaned_masters`）
+    - 从节点数量为 0，槽位不为 0，且标志位 `CLUSTER_NODE_MIGRATE_TO` 不为空
+  - 统计所有节点中，从节点的最大数量（`max_slaves`）
+  - 如果当前节点为从节点，记录其对应的主节点的从节点数量（`this_slaves`）
+
+    ```c
+    void clusterCron(void) {
+        ...
+        while((de = dictNext(di)) != NULL) {
+            ...
+            if (nodeIsSlave(myself) && nodeIsMaster(node) && !nodeFailed(node)) {
+                int okslaves = clusterCountNonFailingSlaves(node);
+
+                if (okslaves == 0 && node->numslots > 0 &&
+                    node->flags & CLUSTER_NODE_MIGRATE_TO)
+                {
+                    orphaned_masters++;
+                }
+                if (okslaves > max_slaves) max_slaves = okslaves;
+                if (nodeIsSlave(myself) && myself->slaveof == node)
+                    this_slaves = okslaves;
+            }
+            ...
+        }
+        ...
+    }
+    ```
+
+- **更新连接**
+  - 针对长时间无响应的节点，主动释放连接，在下次任务中会进行重连，判断条件为：
+    - 处于连接状态，且连接时间超过超时时间
+    - 已经发送 `ping` 命令，但未收到响应
+    - 距离发送 `ping` 命令和上次收到数据，超过超时时间的一半
+
+    ```c
+    void clusterCron(void) {
+        ...
+        while((de = dictNext(di)) != NULL) {
+            ...
+            mstime_t ping_delay = now - node->ping_sent;
+            mstime_t data_delay = now - node->data_received;
+            if (node->link &&
+                now - node->link->ctime >
+                server.cluster_node_timeout &&
+                node->ping_sent &&
+                ping_delay > server.cluster_node_timeout/2 &&
+                data_delay > server.cluster_node_timeout/2)
+            {
+                /* Disconnect the link, it will be reconnected automatically. */
+                freeClusterLink(node->link);
+            }
+            ...
+        }
+        dictReleaseIterator(di);
+        ...
+    }
+    ```
+
+- **固定条件心跳**
+  - 针对上次距离上次发送 `ping` 命令超过超时时间的节点，发送 `ping` 命令
+  - 如果当前节点为主节点，且目标节点为正在执行故障转移的从节点，发送 `ping` 命令
+    - 在故障转移期间，保障高频通信，确保状态及时更新
+
+    ```c
+    void clusterCron(void) {
+        ...
+        while((de = dictNext(di)) != NULL) {
+            ...
+            if (node->link &&
+                node->ping_sent == 0 &&
+                (now - node->pong_received) > server.cluster_node_timeout/2)
+            {
+                clusterSendPing(node->link, CLUSTERMSG_TYPE_PING);
+                continue;
+            }
+
+            if (server.cluster->mf_end &&
+                nodeIsMaster(myself) &&
+                server.cluster->mf_slave == node &&
+                node->link)
+            {
+                clusterSendPing(node->link, CLUSTERMSG_TYPE_PING);
+                continue;
+            }
+            ...
+        }
+        dictReleaseIterator(di);
+        ...
+    }
+    ```
+
+- **故障判断**
+  - 当 `ping` 命令响应和数据响应均超时，且未标记故障，则添加疑似故障标记位 `CLUSTER_NODE_PFAIL`
+  - 设置更新标记位 `update_state`，后续将更新集群配置，并广播
+
+    ```c
+    void clusterCron(void) {
+        ...
+        while((de = dictNext(di)) != NULL) {
+            ...
+            mstime_t node_delay = (ping_delay < data_delay) ? ping_delay :
+                                                            data_delay;
+
+            if (node_delay > server.cluster_node_timeout) {
+                /* Timeout reached. Set the node as possibly failing if it is
+                * not already in this state. */
+                if (!(node->flags & (CLUSTER_NODE_PFAIL|CLUSTER_NODE_FAIL))) {
+                    serverLog(LL_DEBUG,"*** NODE %.40s possibly failing",
+                        node->name);
+                    node->flags |= CLUSTER_NODE_PFAIL;
+                    update_state = 1;
+                }
+            }
+        }
+        dictReleaseIterator(di);
+        ...
+    }
+    ```
+
+- **更新主从关系**
+  - 调用 [`replicationSetMaster()`](https://github.com/redis/redis/blob/7.0.0/src/replication.c#L2908) 函数，重新绑定主从关系，其触发条件为：
+    - 当前节点为从节点
+    - 未绑定主节点，且集群中存在有效的主节点地址
+  - 调用 [`clusterHandleSlaveMigration()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L3716) 函数执行从节点迁移，提高孤儿节点的可用性，其触发条件为：
+    - 存在孤儿主节点（`orphaned_masters`）
+    - 当前节点为从节点，且其主节点的从节点数量最多并超过 1 个
+    - 设置允许自动迁移标记位 `cluster_allow_replica_migration`
+
+    ```c
+    void clusterCron(void) {
+        ...
+        /* If we are a slave node but the replication is still turned off,
+        * enable it if we know the address of our master and it appears to
+        * be up. */
+        if (nodeIsSlave(myself) &&
+            server.masterhost == NULL &&
+            myself->slaveof &&
+            nodeHasAddr(myself->slaveof))
+        {
+            replicationSetMaster(myself->slaveof->ip, myself->slaveof->port);
+        }
+        ...
+        if (nodeIsSlave(myself)) {
+            ...
+            /* If there are orphaned slaves, and we are a slave among the masters
+            * with the max number of non-failing slaves, consider migrating to
+            * the orphaned masters. Note that it does not make sense to try
+            * a migration if there is no master with at least *two* working
+            * slaves. */
+            if (orphaned_masters && max_slaves >= 2 && this_slaves == max_slaves && server.cluster_allow_replica_migration)
+                clusterHandleSlaveMigration(max_slaves);
+        }
+
+        ...
+    }
+    ```
+
+- **更新故障转移状态**
+  - 调用 [`manualFailoverCheckTimeout`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L3848) 函数，如果手动故障转移执行超时，强制终止
+  - 如果当前节点为从节点，调用 [`clusterHandleManualFailover()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L3857) 函数，推进手动故障转移流程
+  - 如果当前节点为从节点，且未设置禁止自动故障转移标记位 `CLUSTER_MODULE_FLAG_NO_FAILOVER`，调用 [`clusterHandleSlaveFailover()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L3518) 函数执行自动故障转移
+
+    ```c
+    void clusterCron(void) {
+        ...
+        /* Abort a manual failover if the timeout is reached. */
+        manualFailoverCheckTimeout();
+
+        if (nodeIsSlave(myself)) {
+            clusterHandleManualFailover();
+            if (!(server.cluster_module_flags & CLUSTER_MODULE_FLAG_NO_FAILOVER))
+                clusterHandleSlaveFailover();
+            ...
+        }
+        ...
+    }
+    ```
+
+- **更新配置**
+  - 若集群状态发生变更（`update_state`），或处于异常状态（`CLUSTER_FAIL`），则调用 [`clusterUpdateState()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L4372) 函数，更新当前集群的状态
+
+    ```c
+    void clusterCron(void) {
+        ...
+        if (update_state || server.cluster->state == CLUSTER_FAIL)
+            clusterUpdateState();
+    }
+    ```
 
 ## 故障转移
 
