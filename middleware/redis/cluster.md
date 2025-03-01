@@ -728,7 +728,7 @@ void clusterCommand(client *c) {
 
 ## 数据分片
 
-Cluster 使用了一致性哈希作为分片方式，将所有数据划分为 16384 个哈希槽（Hash Slot），每个键通过 CRC16 算法计算出一个哈希值，再对 16384 取模，确定其所属的槽位，进而确定所在节点。
+Cluster 使用了基于虚拟槽分区的一致性哈希作为分片方式，将所有数据划分为 16384 个哈希槽（Hash Slot），每个键通过 CRC16 算法计算出一个哈希值，再对 16384 取模，确定其所属的槽位，进而确定所在节点。
 
 集群中的每个主节点负责一部分哈希槽（例如：节点 A 负责槽 0-5000，节点 B 负责槽 5001-10000，依此类推），哈希槽可以在创建节点时，由 Redis 平均进行分配，也可以由运维人员手动进行配置。
 
@@ -1596,9 +1596,130 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     }
     ```
 
+## 消息通知
+
+Redis Cluster 采用去中心化架构，集群中每个节点均独立维护完整的元数据信息（如哈希槽分配、主从拓扑、节点健康状态及数据迁移进度等）。节点间基于 Gossip 协议实现分布式协同：通过周期性随机选取部分节点交换增量状态信息（如 PING/PONG 消息），以低带宽开销逐步扩散局部变更，最终保障全局元数据的一致性。
+
+消息类型 [`CLUSTERMSG_TYPE`](https://github.com/redis/redis/blob/7.0.0/src/cluster.h#L89) 如下所示：
+
+```c
+/* Message types.
+ *
+ * Note that the PING, PONG and MEET messages are actually the same exact
+ * kind of packet. PONG is the reply to ping, in the exact format as a PING,
+ * while MEET is a special PING that forces the receiver to add the sender
+ * as a node (if it is not already in the list). */
+#define CLUSTERMSG_TYPE_PING 0          /* Ping */
+#define CLUSTERMSG_TYPE_PONG 1          /* Pong (reply to Ping) */
+#define CLUSTERMSG_TYPE_MEET 2          /* Meet "let's join" message */
+#define CLUSTERMSG_TYPE_FAIL 3          /* Mark node xxx as failing */
+#define CLUSTERMSG_TYPE_PUBLISH 4       /* Pub/Sub Publish propagation */
+#define CLUSTERMSG_TYPE_FAILOVER_AUTH_REQUEST 5 /* May I failover? */
+#define CLUSTERMSG_TYPE_FAILOVER_AUTH_ACK 6     /* Yes, you have my vote */
+#define CLUSTERMSG_TYPE_UPDATE 7        /* Another node slots configuration */
+#define CLUSTERMSG_TYPE_MFSTART 8       /* Pause clients for manual failover */
+#define CLUSTERMSG_TYPE_MODULE 9        /* Module cluster API message. */
+#define CLUSTERMSG_TYPE_PUBLISHSHARD 10 /* Pub/Sub Publish shard propagation */
+#define CLUSTERMSG_TYPE_COUNT 11        /* Total number of message types. */
+```
+
+### 消息发送
+
+### 消息处理
+
+在集群初始化，即[`clusterInit()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L606) 函数中，会注册 socket 处理函数 [`clusterAcceptHandler()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L846)，用于处理节点间连接请求。
+
+```c
+void clusterInit(void) {
+    ...
+    if (createSocketAcceptHandler(&server.cfd, clusterAcceptHandler) != C_OK) {
+        serverPanic("Unrecoverable error creating Redis Cluster socket accept handler.");
+    }
+    ...
+}
+```
+
+当连接到达时，最终会调用 [`clusterConnAcceptHandler()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L822) 函数来创建连接，并将 [`clusterReadHandler()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L2663) 函数设置为连接的写回调函数。
+
+```c
+void clusterAcceptHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
+    ...
+    while(max--) {
+        ...
+        /* Accept the connection now.  connAccept() may call our handler directly
+         * or schedule it for later depending on connection implementation.
+         */
+        if (connAccept(conn, clusterConnAcceptHandler) == C_ERR) {
+            ...
+        }
+    }
+}
+
+static void clusterConnAcceptHandler(connection *conn) {
+    ...
+    link = createClusterLink(NULL);
+    link->conn = conn;
+    connSetPrivateData(conn, link);
+
+    /* Register read handler */
+    connSetReadHandler(conn, clusterReadHandler);
+}
+```
+
+[`clusterReadHandler()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L2663) 函数内部会对接收到的数据做合法性处理，然后由 [`clusterProcessPacket()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L2065) 函数区分消息类型，实现相对应的逻辑。
+
+```c
+void clusterReadHandler(connection *conn) {
+    ...
+    while(1) { /* Read as long as there is data to read. */
+        ...
+        /* Total length obtained? Process this packet. */
+        if (rcvbuflen >= 8 && rcvbuflen == ntohl(hdr->totlen)) {
+            if (clusterProcessPacket(link)) {
+                ...
+            } else {
+                return; /* Link no longer valid. */
+            }
+        }
+    }
+}
+
+int clusterProcessPacket(clusterLink *link) {
+    ...
+    /* Initial processing of PING and MEET requests replying with a PONG. */
+    if (type == CLUSTERMSG_TYPE_PING || type == CLUSTERMSG_TYPE_MEET) {
+        ...
+    }
+
+    /* PING, PONG, MEET: process config information. */
+    if (type == CLUSTERMSG_TYPE_PING || type == CLUSTERMSG_TYPE_PONG ||
+        type == CLUSTERMSG_TYPE_MEET)
+    {
+        ...
+    } else if (type == CLUSTERMSG_TYPE_FAIL) {
+        ...
+    } else if (type == CLUSTERMSG_TYPE_PUBLISH || type == CLUSTERMSG_TYPE_PUBLISHSHARD) {
+        ...
+    } else if (type == CLUSTERMSG_TYPE_FAILOVER_AUTH_REQUEST) {
+        ...
+    } else if (type == CLUSTERMSG_TYPE_FAILOVER_AUTH_ACK) {
+        ...
+    } else if (type == CLUSTERMSG_TYPE_MFSTART) {
+        ...
+    } else if (type == CLUSTERMSG_TYPE_UPDATE) {
+        ...
+    } else if (type == CLUSTERMSG_TYPE_MODULE) {
+        ...
+    } else {
+        serverLog(LL_WARNING,"Received unknown packet type: %d", type);
+    }
+    return 1;
+}
+```
+
 ## 故障转移
 
-2. 高可用性与自动故障转移
+高可用性与自动故障转移
 主从复制：
 每个主节点（Master）可以有多个从节点（Slave），主节点负责写入，从节点异步复制数据。
 当主节点宕机时，从节点会自动升级为主节点，继续提供服务。
@@ -1629,3 +1750,4 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
 
 - [Scale with Redis Cluster](https://redis.io/docs/latest/operate/oss_and_stack/management/scaling/)
 - [redis源码解析 pdf redis cluster 源码](https://blog.51cto.com/u_16099274/6468543)
+- <https://github.com/SkyRainCho/redisDoc/blob/master/redis/cluster.md>
