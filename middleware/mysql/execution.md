@@ -86,6 +86,7 @@ UPDATE a SET grade = 10 WHERE id > 4 AND age > 18 AND gender = 1 AND grade > 6
     - 定位到 `age > 18` 的数据，然后直接判断是否 `gender = 1` 与 `id > 4` 的条件
     - 进行回表，将数据返回给执行器
     - 执行器仅判断是否满足 `grade > 6` 的过滤条件
+  - 会优先从 Buffer Pool 中查找，未命中时，再读取磁盘并更新 Buffer Pool
 
 - **加锁（事务隔离与并发控制）**
   - InnoDB 在可重复读（RR）隔离级别下，为扫描到的行和间隙加锁：
@@ -103,7 +104,7 @@ UPDATE a SET grade = 10 WHERE id > 4 AND age > 18 AND gender = 1 AND grade > 6
 - **事务提交与 Binlog 处理**
   - 对于事务的提交，通过两阶段提交（2PC）确保 Redo Log 和 Binlog 的一致性
   - Prepare 阶段：
-    - 将数据页的修改操作写入 Redo Log Buffer，并标记为 PREPARE
+    - 将 Buffer Pool 中的修改操作写入 Redo Log Buffer，并标记为 PREPARE
     - 根据 `innodb_flush_log_at_trx_commit` 决定要不要直接将 Redo Log 持久化到磁盘
   - Commit 阶段：
     - Binlog 写入内存缓冲区（Binlog Cache）
