@@ -726,6 +726,39 @@ void clusterCommand(client *c) {
 }
 ```
 
+[`clusterStartHandshake()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L15705) 函数会将目标节点添加至集群中，并添加 `HANDSHAKE` 与 `MEET` 标志位，后续会在定时任务中触发建连操作
+
+- 针对于 `MEET` 标记，会发送 `Meet` 消息给目标节点，取代 `Ping` 消息，如 [`clusterLinkConnectHandler()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L2618) 函数所示
+- 针对于 `HANDSHAKE` 标记，会在节点间首次完成 `Ping/Pong` 交互后，取消标记
+
+    ```c
+    int clusterStartHandshake(char *ip, int port, int cport) {
+        ...
+        /* Add the node with a random address (NULL as first argument to
+        * createClusterNode()). Everything will be fixed during the
+        * handshake. */
+        n = createClusterNode(NULL,CLUSTER_NODE_HANDSHAKE|CLUSTER_NODE_MEET);
+        memcpy(n->ip,norm_ip,sizeof(n->ip));
+        n->port = port;
+        n->cport = cport;
+        clusterAddNode(n);
+        return 1;
+    }
+
+    void clusterLinkConnectHandler(connection *conn) {
+        ...
+        /* Queue a PING in the new connection ASAP: this is crucial
+        * to avoid false positives in failure detection.
+        *
+        * If the node is flagged as MEET, we send a MEET message instead
+        * of a PING one, to force the receiver to add us in its node
+        * table. */
+        clusterSendPing(link, node->flags & CLUSTER_NODE_MEET ?
+                CLUSTERMSG_TYPE_MEET : CLUSTERMSG_TYPE_PING);
+        ...
+    }
+    ```
+
 ## 数据分片
 
 Cluster 使用了基于虚拟槽分区的一致性哈希作为分片方式，将所有数据划分为 16384 个哈希槽（Hash Slot），每个键通过 CRC16 算法计算出一个哈希值，再对 16384 取模，确定其所属的槽位，进而确定所在节点。
@@ -1073,240 +1106,16 @@ static int cliReadReply(int output_raw_strings) {
   - 若目标节点非本地（`n != myself`），返回 `CLUSTER_REDIR_MOVED` 错误，即 `moved` 重定向
   - 返回最终节点
 
-```c
-clusterNode *getNodeByQuery(client *c, struct redisCommand *cmd, robj **argv, int argc, int *hashslot, int *error_code) {
-    ...
-    /* Base case: just return the right node. However if this node is not
-     * myself, set error_code to MOVED since we need to issue a redirection. */
-    if (n != myself && error_code) *error_code = CLUSTER_REDIR_MOVED;
-    return n;
-    ...
-}
-```
-
-
-
-错误码类型
-CLUSTER_REDIR_CROSS_SLOT：多键跨槽。
-CLUSTER_REDIR_UNSTABLE：槽迁移中且缺键。
-CLUSTER_REDIR_DOWN_*：集群宕机相关错误。
-CLUSTER_REDIR_ASK/MOVED：临时 / 永久重定向。
-该函数通过精细的状态判断，确保 Redis 集群在分布式环境下正确路由请求，同时处理异常状态，保障数据一致性和可用性。
-
-```c
-clusterNode *getNodeByQuery(client *c, struct redisCommand *cmd, robj **argv, int argc, int *hashslot, int *error_code) {
-    ...
-
-    ...
-}
-```
-
-```c
-clusterNode *getNodeByQuery(client *c, struct redisCommand *cmd, robj **argv, int argc, int *hashslot, int *error_code) {
-    clusterNode *n = NULL;
-    robj *firstkey = NULL;
-    int multiple_keys = 0;
-    multiState *ms, _ms;
-    multiCmd mc;
-    int i, slot = 0, migrating_slot = 0, importing_slot = 0, missing_keys = 0;
-
-    /* Allow any key to be set if a module disabled cluster redirections. */
-    if (server.cluster_module_flags & CLUSTER_MODULE_FLAG_NO_REDIRECTION)
-        return myself;
-
-    /* Set error code optimistically for the base case. */
-    if (error_code) *error_code = CLUSTER_REDIR_NONE;
-
-    /* Modules can turn off Redis Cluster redirection: this is useful
-     * when writing a module that implements a completely different
-     * distributed system. */
-
-    /* We handle all the cases as if they were EXEC commands, so we have
-     * a common code path for everything */
-    if (cmd->proc == execCommand) {
-        /* If CLIENT_MULTI flag is not set EXEC is just going to return an
-         * error. */
-        if (!(c->flags & CLIENT_MULTI)) return myself;
-        ms = &c->mstate;
-    } else {
-        /* In order to have a single codepath create a fake Multi State
-         * structure if the client is not in MULTI/EXEC state, this way
-         * we have a single codepath below. */
-        ms = &_ms;
-        _ms.commands = &mc;
-        _ms.count = 1;
-        mc.argv = argv;
-        mc.argc = argc;
-        mc.cmd = cmd;
+    ```c
+    clusterNode *getNodeByQuery(client *c, struct redisCommand *cmd, robj **argv, int argc, int *hashslot, int *error_code) {
+        ...
+        /* Base case: just return the right node. However if this node is not
+        * myself, set error_code to MOVED since we need to issue a redirection. */
+        if (n != myself && error_code) *error_code = CLUSTER_REDIR_MOVED;
+        return n;
+        ...
     }
-
-    int is_pubsubshard = cmd->proc == ssubscribeCommand ||
-            cmd->proc == sunsubscribeCommand ||
-            cmd->proc == spublishCommand;
-
-    /* Check that all the keys are in the same hash slot, and obtain this
-     * slot and the node associated. */
-    for (i = 0; i < ms->count; i++) {
-        struct redisCommand *mcmd;
-        robj **margv;
-        int margc, numkeys, j;
-        keyReference *keyindex;
-
-        mcmd = ms->commands[i].cmd;
-        margc = ms->commands[i].argc;
-        margv = ms->commands[i].argv;
-
-        getKeysResult result = GETKEYS_RESULT_INIT;
-        numkeys = getKeysFromCommand(mcmd,margv,margc,&result);
-        keyindex = result.keys;
-
-        for (j = 0; j < numkeys; j++) {
-            robj *thiskey = margv[keyindex[j].pos];
-            int thisslot = keyHashSlot((char*)thiskey->ptr,
-                                       sdslen(thiskey->ptr));
-
-            if (firstkey == NULL) {
-                /* This is the first key we see. Check what is the slot
-                 * and node. */
-                firstkey = thiskey;
-                slot = thisslot;
-                n = server.cluster->slots[slot];
-
-                /* Error: If a slot is not served, we are in "cluster down"
-                 * state. However the state is yet to be updated, so this was
-                 * not trapped earlier in processCommand(). Report the same
-                 * error to the client. */
-                if (n == NULL) {
-                    getKeysFreeResult(&result);
-                    if (error_code)
-                        *error_code = CLUSTER_REDIR_DOWN_UNBOUND;
-                    return NULL;
-                }
-
-                /* If we are migrating or importing this slot, we need to check
-                 * if we have all the keys in the request (the only way we
-                 * can safely serve the request, otherwise we return a TRYAGAIN
-                 * error). To do so we set the importing/migrating state and
-                 * increment a counter for every missing key. */
-                if (n == myself &&
-                    server.cluster->migrating_slots_to[slot] != NULL)
-                {
-                    migrating_slot = 1;
-                } else if (server.cluster->importing_slots_from[slot] != NULL) {
-                    importing_slot = 1;
-                }
-            } else {
-                /* If it is not the first key/channel, make sure it is exactly
-                 * the same key/channel as the first we saw. */
-                if (!equalStringObjects(firstkey,thiskey)) {
-                    if (slot != thisslot) {
-                        /* Error: multiple keys from different slots. */
-                        getKeysFreeResult(&result);
-                        if (error_code)
-                            *error_code = CLUSTER_REDIR_CROSS_SLOT;
-                        return NULL;
-                    } else {
-                        /* Flag this request as one with multiple different
-                         * keys/channels. */
-                        multiple_keys = 1;
-                    }
-                }
-            }
-
-            /* Migrating / Importing slot? Count keys we don't have.
-             * If it is pubsubshard command, it isn't required to check
-             * the channel being present or not in the node during the
-             * slot migration, the channel will be served from the source
-             * node until the migration completes with CLUSTER SETSLOT <slot>
-             * NODE <node-id>. */
-            int flags = LOOKUP_NOTOUCH | LOOKUP_NOSTATS | LOOKUP_NONOTIFY;
-            if ((migrating_slot || importing_slot) && !is_pubsubshard &&
-                lookupKeyReadWithFlags(&server.db[0], thiskey, flags) == NULL)
-            {
-                missing_keys++;
-            }
-        }
-        getKeysFreeResult(&result);
-    }
-
-    /* No key at all in command? then we can serve the request
-     * without redirections or errors in all the cases. */
-    if (n == NULL) return myself;
-
-    /* Cluster is globally down but we got keys? We only serve the request
-     * if it is a read command and when allow_reads_when_down is enabled. */
-    if (server.cluster->state != CLUSTER_OK) {
-        if (is_pubsubshard) {
-            if (!server.cluster_allow_pubsubshard_when_down) {
-                if (error_code) *error_code = CLUSTER_REDIR_DOWN_STATE;
-                return NULL;
-            }
-        } else if (!server.cluster_allow_reads_when_down) {
-            /* The cluster is configured to block commands when the
-             * cluster is down. */
-            if (error_code) *error_code = CLUSTER_REDIR_DOWN_STATE;
-            return NULL;
-        } else if (cmd->flags & CMD_WRITE) {
-            /* The cluster is configured to allow read only commands */
-            if (error_code) *error_code = CLUSTER_REDIR_DOWN_RO_STATE;
-            return NULL;
-        } else {
-            /* Fall through and allow the command to be executed:
-             * this happens when server.cluster_allow_reads_when_down is
-             * true and the command is not a write command */
-        }
-    }
-
-    /* Return the hashslot by reference. */
-    if (hashslot) *hashslot = slot;
-
-    /* MIGRATE always works in the context of the local node if the slot
-     * is open (migrating or importing state). We need to be able to freely
-     * move keys among instances in this case. */
-    if ((migrating_slot || importing_slot) && cmd->proc == migrateCommand)
-        return myself;
-
-    /* If we don't have all the keys and we are migrating the slot, send
-     * an ASK redirection. */
-    if (migrating_slot && missing_keys) {
-        if (error_code) *error_code = CLUSTER_REDIR_ASK;
-        return server.cluster->migrating_slots_to[slot];
-    }
-
-    /* If we are receiving the slot, and the client correctly flagged the
-     * request as "ASKING", we can serve the request. However if the request
-     * involves multiple keys and we don't have them all, the only option is
-     * to send a TRYAGAIN error. */
-    if (importing_slot &&
-        (c->flags & CLIENT_ASKING || cmd->flags & CMD_ASKING))
-    {
-        if (multiple_keys && missing_keys) {
-            if (error_code) *error_code = CLUSTER_REDIR_UNSTABLE;
-            return NULL;
-        } else {
-            return myself;
-        }
-    }
-
-    /* Handle the read-only client case reading from a slave: if this
-     * node is a slave and the request is about a hash slot our master
-     * is serving, we can reply without redirection. */
-    int is_write_command = (c->cmd->flags & CMD_WRITE) ||
-                           (c->cmd->proc == execCommand && (c->mstate.cmd_flags & CMD_WRITE));
-    if (((c->flags & CLIENT_READONLY) || is_pubsubshard) &&
-        !is_write_command &&
-        nodeIsSlave(myself) &&
-        myself->slaveof == n)
-    {
-        return myself;
-    }
-
-    /* Base case: just return the right node. However if this node is not
-     * myself, set error_code to MOVED since we need to issue a redirection. */
-    if (n != myself && error_code) *error_code = CLUSTER_REDIR_MOVED;
-    return n;
-}
-```
+    ```
 
 ## 定时任务
 
@@ -1625,6 +1434,64 @@ Redis Cluster 采用去中心化架构，集群中每个节点均独立维护完
 
 ### 消息发送
 
+集群的消息通信机制中，消息发送流程通过以下步骤实现：
+
+- 消息封装与调度：所有集群消息统一由 [`clusterSendMessage()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L2740) 函数负责创建消息对象（`msg`）并触发发送流程；
+- 异步回调注册：通过调用 [`connSetWriteHandlerWithBarrier()`](https://github.com/redis/redis/blob/7.0.0/src/connection.h#L191) 函数，将网络连接的写回调设置为 [`clusterWriteHandler()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L2599)，该操作会确保在处理新消息前完成其他待处理的连接操作；
+- 缓冲区写入：消息内容会被追加到连接的发送缓冲区（`link->sndbuf`）中暂存；
+- 网络层发送：当 I/O 多路复用模块检测到连接可写时，最终由注册的 [`clusterWriteHandler()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L2599) 函数将缓冲区数据通过套接字发送至目标节点。
+
+    ```c
+    void clusterSendMessage(clusterLink *link, unsigned char *msg, size_t msglen) {
+        if (sdslen(link->sndbuf) == 0 && msglen != 0)
+            connSetWriteHandlerWithBarrier(link->conn, clusterWriteHandler, 1);
+
+        link->sndbuf = sdscatlen(link->sndbuf, msg, msglen);
+
+        /* Populate sent messages stats. */
+        clusterMsg *hdr = (clusterMsg*) msg;
+        uint16_t type = ntohs(hdr->type);
+        if (type < CLUSTERMSG_TYPE_COUNT)
+            server.cluster->stats_bus_messages_sent[type]++;
+    }
+
+    void clusterWriteHandler(connection *conn) {
+        clusterLink *link = connGetPrivateData(conn);
+        ssize_t nwritten;
+
+        nwritten = connWrite(conn, link->sndbuf, sdslen(link->sndbuf));
+        if (nwritten <= 0) {
+            serverLog(LL_DEBUG,"I/O error writing to node link: %s",
+                (nwritten == -1) ? connGetLastError(conn) : "short write");
+            handleLinkIOError(link);
+            return;
+        }
+        sdsrange(link->sndbuf,nwritten,-1);
+        if (sdslen(link->sndbuf) == 0)
+            connSetWriteHandler(link->conn, NULL);
+    }
+    ```
+
+集群中的广播操作由 [`clusterBroadcastMessage()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L2759) 函数进行处理，函数内部会遍历所有正常连接的节点，复用 [`clusterSendMessage()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L2740) 函数执行消息发送逻辑。
+
+```c
+void clusterBroadcastMessage(void *buf, size_t len) {
+    dictIterator *di;
+    dictEntry *de;
+
+    di = dictGetSafeIterator(server.cluster->nodes);
+    while((de = dictNext(di)) != NULL) {
+        clusterNode *node = dictGetVal(de);
+
+        if (!node->link) continue;
+        if (node->flags & (CLUSTER_NODE_MYSELF|CLUSTER_NODE_HANDSHAKE))
+            continue;
+        clusterSendMessage(node->link,buf,len);
+    }
+    dictReleaseIterator(di);
+}
+```
+
 ### 消息处理
 
 在集群初始化，即[`clusterInit()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L606) 函数中，会注册 socket 处理函数 [`clusterAcceptHandler()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L846)，用于处理节点间连接请求。
@@ -1717,6 +1584,181 @@ int clusterProcessPacket(clusterLink *link) {
 }
 ```
 
+### Ping & Pong & Meet
+
+[`clusterSendPing()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L2880) 函数用于发送 `Ping`、 `Pong` 和 `Meet` 消息，在维持心跳以外，其核心是通过 Gossip 协议，传播当前节点中所维护的，集群中其他节点的状态，从而确保集群状态的一致性。其中各消息的触发时机如下所示：
+
+- `Ping`
+  - 建立连接时，向目标节点发送
+  - 定时任务中，随机选择部分节点发送
+  - 故障转移流程中，主动触发状态同步，并增加定时任务中的触发频率
+
+- `Meet`
+  - 节点间首次建立连接时，替代 `Ping` 消息，让目标节点添加当前节点至其配置中，
+
+- `Pong`
+  - 节点收到 `Ping` 或 `Pong` 消息时进行响应
+  - 自身状态发送重大变化时，例如槽位迁移或故障转移，主动向其他节点广播
+
+函数核心逻辑如下所示：
+
+- **Gossip 数量控制**
+  - 计算传播携带节点的上限 `freshnodes`，总结点减去自身节点与目标节点
+  - 计算携带节点的数量 `wanted`，直接取节点总数的 10%
+  - 更新节点数量的极值，最小值限制为 3，最大值限制为 $N-2$
+  - 额外获取处于主观下线状态的节点数量 `pfail_wanted`，强制传播 `PFAIL` 状态的节点，加速 `PFAIL -> FAIL` 的状态转变，保障故障转移流程高效执行
+
+    ```c
+    void clusterSendPing(clusterLink *link, int type) {
+        ...
+        int freshnodes = dictSize(server.cluster->nodes)-2;
+
+        wanted = floor(dictSize(server.cluster->nodes)/10);
+        if (wanted < 3) wanted = 3;
+        if (wanted > freshnodes) wanted = freshnodes;
+
+        int pfail_wanted = server.cluster->stats_pfail_nodes;
+        ...
+    }
+    ```
+
+- **构造消息对象**
+  - 构建缓冲区长度 `estlen`，包括消息头长度、Gossip 节点长度和 `PING` 消息的扩展数据
+    - `clusterMsgData` 是一个 union 类型的联合体，在 `PING/PONG` 的场景下，数据由 Gossip 实际包含的节点数量动态决定，不需要使用固定空间
+  - 若发送消息类型为 `PING`，更新 `ping_sent` 时间戳
+    - `PONG` 与 `MEET` 消息会复用该函数，所以额外判断消息类型再赋值
+  - 调用 [`clusterBuildMessageHdr()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L2777) 函数构建消息对象 `hdr`
+
+    ```c
+    void clusterSendPing(clusterLink *link, int type) {
+        ...
+        estlen = sizeof(clusterMsg) - sizeof(union clusterMsgData);
+        estlen += (sizeof(clusterMsgDataGossip)*(wanted + pfail_wanted));
+        estlen += sizeof(clusterMsgPingExt) + getHostnamePingExtSize();
+
+        if (estlen < (int)sizeof(clusterMsg)) estlen = sizeof(clusterMsg);
+        buf = zcalloc(estlen);
+        hdr = (clusterMsg*) buf;
+
+        if (!link->inbound && type == CLUSTERMSG_TYPE_PING)
+            link->node->ping_sent = mstime();
+        clusterBuildMessageHdr(hdr,type);
+        ...
+    }
+    ```
+
+- **Gossip 填充**
+  - 循环执行填充操作，并限制执行上限为 `wanted*3`
+  - 每次填充时，通过 `dictGetRandomKey()` 函数随机获取一个节点，并过滤以下节点
+    - 自身节点，该信息已包含在消息头中
+    - 处于 `PFAIL` 状态的节点，后续会统一添加
+    - 处于 `HANDSHAKE` 或 `NOADDR` 状态的节点，不能正常执行 `PING` 命令
+    - 已断开连接且无槽位的节点
+    - 已经添加过的节点
+  - 每次执行完成后，更新相关计数器信息，即 `freshnodes` 与 `gossipcount`
+
+    ```c
+    void clusterSendPing(clusterLink *link, int type) {
+        ...
+        int maxiterations = wanted*3;
+        while(freshnodes > 0 && gossipcount < wanted && maxiterations--) {
+            dictEntry *de = dictGetRandomKey(server.cluster->nodes);
+            clusterNode *this = dictGetVal(de);
+
+            /* Don't include this node: the whole packet header is about us
+            * already, so we just gossip about other nodes. */
+            if (this == myself) continue;
+
+            /* PFAIL nodes will be added later. */
+            if (this->flags & CLUSTER_NODE_PFAIL) continue;
+
+            if (this->flags & (CLUSTER_NODE_HANDSHAKE|CLUSTER_NODE_NOADDR) ||
+                (this->link == NULL && this->numslots == 0))
+            {
+                freshnodes--; /* Technically not correct, but saves CPU. */
+                continue;
+            }
+
+            /* Do not add a node we already have. */
+            if (clusterNodeIsInGossipSection(hdr,gossipcount,this)) continue;
+
+            clusterSetGossipEntry(hdr,gossipcount,this);
+            freshnodes--;
+            gossipcount++;
+        }
+        ...
+    }
+    ```
+
+  - 添加所有处于 `PFAIL` 状态且不处于 `HANDSHAKE` 和 `NOADDR` 状态的节点
+  - 更新相关计数器信息
+
+    ```c
+    void clusterSendPing(clusterLink *link, int type) {
+        ...
+        if (pfail_wanted) {
+            dictIterator *di;
+            dictEntry *de;
+
+            di = dictGetSafeIterator(server.cluster->nodes);
+            while((de = dictNext(di)) != NULL && pfail_wanted > 0) {
+                clusterNode *node = dictGetVal(de);
+                if (node->flags & CLUSTER_NODE_HANDSHAKE) continue;
+                if (node->flags & CLUSTER_NODE_NOADDR) continue;
+                if (!(node->flags & CLUSTER_NODE_PFAIL)) continue;
+                clusterSetGossipEntry(hdr,gossipcount,node);
+                freshnodes--;
+                gossipcount++;
+                /* We take the count of the slots we allocated, since the
+                * PFAIL stats may not match perfectly with the current number
+                * of PFAIL nodes. */
+                pfail_wanted--;
+            }
+            dictReleaseIterator(di);
+        }
+        ...
+    }
+    ```
+
+- **填充扩展数据**
+  - 调用 [`getInitialPingExt()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L1967) 函数初始化拓展信息的结构体
+  - 调用 [`writeHostnamePingExt()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L1992) 函数写入主机名拓展信息
+
+    ```c
+    void clusterSendPing(clusterLink *link, int type) {
+        ...
+        int totlen = 0;
+        int extensions = 0;
+        clusterMsgPingExt *cursor = getInitialPingExt(hdr, gossipcount);
+        if (sdslen(myself->hostname) != 0) {
+            hdr->mflags[0] |= CLUSTERMSG_FLAG0_EXT_DATA;
+            totlen += writeHostnamePingExt(&cursor);
+            extensions++;
+        }
+        ...
+    }
+    ```
+
+- **消息发送**
+  - 根据实际情况，更新数据长度，并填充相关字段
+  - 调用 [`clusterSendMessage()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L2740) 函数执行发送操作
+
+    ```c
+    void clusterSendPing(clusterLink *link, int type) {
+        ...
+        /* Compute the actual total length and send! */
+        totlen += sizeof(clusterMsg)-sizeof(union clusterMsgData);
+        totlen += (sizeof(clusterMsgDataGossip)*gossipcount);
+        hdr->count = htons(gossipcount);
+        hdr->extensions = htons(extensions);
+        hdr->totlen = htonl(totlen);
+        clusterSendMessage(link,buf,totlen);
+        zfree(buf);
+    }
+    ```
+
+[`clusterProcessPacket()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L2065) 函数中，针对 `PING & PONG & MEET` 类型的消息，处理逻辑如下所示：
+
 ## 故障转移
 
 高可用性与自动故障转移
@@ -1745,6 +1787,48 @@ int clusterProcessPacket(clusterLink *link) {
       - 主从同步数据传输压力更大
       - 持久化时所需时间更长
       - 不利于槽位的迁移，进而影响服务可用性。而槽位数量较多时，相同的数据量会尽可能分配至多个槽位，可以并行迁移
+
+<br>
+
+2. 每次发送 `ping` 消息时，为什么选择携带 10% 节点的信息
+
+   - 任意两个节点，在最差的情况下，也会每隔 `node_timeout/2` 的时间发送一次 `ping` 消息，也就是在 `node_timeout` 的时间窗口内，总共有 4 次数据传递（2 次自己发出，2 次对方发出），而在（`node_timeout*2`），总共会有 8 次数据传递
+   - 当集群中节点数量为 N 时，在 `node_timeout*2` 的时间窗口中，某个节点信息被传出的概率为 $10\%*8*N$，即每个节点会收到 $80\%N$ 的节点数据，能够覆盖集群大部分节点
+   - [`clusterSendPing()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L2880) 函数中的注释信息如下所示：
+
+    ```c
+    void clusterSendPing(clusterLink *link, int type) {
+        ...
+        /* How many gossip sections we want to add? 1/10 of the number of nodes
+        * and anyway at least 3. Why 1/10?
+        *
+        * If we have N masters, with N/10 entries, and we consider that in
+        * node_timeout we exchange with each other node at least 4 packets
+        * (we ping in the worst case in node_timeout/2 time, and we also
+        * receive two pings from the host), we have a total of 8 packets
+        * in the node_timeout*2 failure reports validity time. So we have
+        * that, for a single PFAIL node, we can expect to receive the following
+        * number of failure reports (in the specified window of time):
+        *
+        * PROB * GOSSIP_ENTRIES_PER_PACKET * TOTAL_PACKETS:
+        *
+        * PROB = probability of being featured in a single gossip entry,
+        *        which is 1 / NUM_OF_NODES.
+        * ENTRIES = 10.
+        * TOTAL_PACKETS = 2 * 4 * NUM_OF_MASTERS.
+        *
+        * If we assume we have just masters (so num of nodes and num of masters
+        * is the same), with 1/10 we always get over the majority, and specifically
+        * 80% of the number of nodes, to account for many masters failing at the
+        * same time.
+        *
+        * Since we have non-voting slaves that lower the probability of an entry
+        * to feature our node, we set the number of entries per packet as
+        * 10% of the total nodes we have. */
+        wanted = floor(dictSize(server.cluster->nodes)/10);
+        ...
+    }
+    ```
 
 ## Ref
 
