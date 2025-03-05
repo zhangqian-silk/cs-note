@@ -1600,6 +1600,22 @@ int clusterProcessPacket(clusterLink *link) {
   - 节点收到 `Ping` 或 `Pong` 消息时进行响应
   - 自身状态发送重大变化时，例如槽位迁移或故障转移，主动向其他节点广播
 
+Gossip 结构体为 [`clusterMsgDataGossip`](https://github.com/redis/redis/blob/7.0.0/src/cluster.h#L225)，主要包含节点名称、心跳信息、IP/Port 信息和节点当前状态：
+
+```c
+typedef struct {
+    char nodename[CLUSTER_NAMELEN];
+    uint32_t ping_sent;
+    uint32_t pong_received;
+    char ip[NET_IP_STR_LEN];  /* IP address last time it was seen */
+    uint16_t port;              /* base port last time it was seen */
+    uint16_t cport;             /* cluster port last time it was seen */
+    uint16_t flags;             /* node->flags copy */
+    uint16_t pport;             /* plaintext-port, when base port is TLS */
+    uint16_t notused1;
+} clusterMsgDataGossip;
+```
+
 函数核心逻辑如下所示：
 
 - **Gossip 数量控制**
@@ -1648,7 +1664,7 @@ int clusterProcessPacket(clusterLink *link) {
     ```
 
 - **Gossip 填充**
-  - 循环执行填充操作，并限制执行上限为 `wanted*3`
+  - 循环调用 [`clusterSetGossipEntry()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L2864) 函数执行填充操作，并限制执行上限为 `wanted*3`
   - 每次填充时，通过 `dictGetRandomKey()` 函数随机获取一个节点，并过滤以下节点
     - 自身节点，该信息已包含在消息头中
     - 处于 `PFAIL` 状态的节点，后续会统一添加
@@ -1690,7 +1706,7 @@ int clusterProcessPacket(clusterLink *link) {
     }
     ```
 
-  - 添加所有处于 `PFAIL` 状态且不处于 `HANDSHAKE` 和 `NOADDR` 状态的节点
+  - 调用 [`clusterSetGossipEntry()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L2864) 函数，添加所有处于 `PFAIL` 状态且不处于 `HANDSHAKE` 和 `NOADDR` 状态的节点
   - 更新相关计数器信息
 
     ```c
@@ -1758,6 +1774,438 @@ int clusterProcessPacket(clusterLink *link) {
     ```
 
 [`clusterProcessPacket()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L2065) 函数中，针对 `PING & PONG & MEET` 类型的消息，处理逻辑如下所示：
+
+- **更新 IP 配置**
+  - 若请求类型为 `MEET`，或当前节点 IP 未初始化，则更新 IP 地址
+  - 调用 `connSockName()` 函数获取本地 IP 地址
+  - 调用 [`clusterDoBeforeSleep()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L4221) 函数来触发配置持久化
+
+    ```c
+    int clusterProcessPacket(clusterLink *link) {
+        ...
+        if (type == CLUSTERMSG_TYPE_PING || type == CLUSTERMSG_TYPE_MEET) {
+            if ((type == CLUSTERMSG_TYPE_MEET || myself->ip[0] == '\0') &&
+                server.cluster_announce_ip == NULL)
+            {
+                char ip[NET_IP_STR_LEN];
+
+                if (connSockName(link->conn,ip,sizeof(ip),NULL) != -1 &&
+                    strcmp(ip,myself->ip))
+                {
+                    memcpy(myself->ip,ip,NET_IP_STR_LEN);
+                    serverLog(LL_WARNING,"IP address for this node updated to %s",
+                        myself->ip);
+                    clusterDoBeforeSleep(CLUSTER_TODO_SAVE_CONFIG);
+                }
+            }
+            ...
+        }
+        ...
+    }
+    ```
+
+- **处理 Meet 消息**
+  - 针对 `MEET` 类型的消息，创建新节点，然后将其添加至集群中，并将配置持久化
+  - 调用 [`clusterProcessGossipSection()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L1627) 函数处理 Gossip 节点信息
+
+    ```c
+    int clusterProcessPacket(clusterLink *link) {
+        ...
+        if (type == CLUSTERMSG_TYPE_PING || type == CLUSTERMSG_TYPE_MEET) {
+            ...
+            if (!sender && type == CLUSTERMSG_TYPE_MEET) {
+                clusterNode *node;
+
+                node = createClusterNode(NULL,CLUSTER_NODE_HANDSHAKE);
+                nodeIp2String(node->ip,link,hdr->myip);
+                node->port = ntohs(hdr->port);
+                node->pport = ntohs(hdr->pport);
+                node->cport = ntohs(hdr->cport);
+                clusterAddNode(node);
+                clusterDoBeforeSleep(CLUSTER_TODO_SAVE_CONFIG);
+            }
+
+            if (!sender && type == CLUSTERMSG_TYPE_MEET)
+                clusterProcessGossipSection(hdr,link);
+            ...
+        }
+        ...
+    }
+    ```
+
+- **响应 Pong 命令**
+  - 针对 `Ping` 与 `Meet` 消息，最终强制调用 [`clusterSendPing()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L2880) 函数发送 `Pong` 消息
+
+    ```c
+    int clusterProcessPacket(clusterLink *link) {
+        ...
+        if (type == CLUSTERMSG_TYPE_PING || type == CLUSTERMSG_TYPE_MEET) {
+            ...
+            clusterSendPing(link,CLUSTERMSG_TYPE_PONG);
+        }
+        ...
+    }
+    ```
+
+- **更新节点基本信息**
+  - 针对出站连接，节点处于握手阶段，且为已知节点（`sender` 存在）：
+    - 调用 [`nodeUpdateAddressIfNeeded()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L1764) 函数更新节点 `sender`，并将配置持久化
+    - 移除建连时创建的临时节点 `link->node`
+    - 在下次发起定时任务中，使用最新配置，重建连接，避免连接存在其他请求导致并发问题
+  - 如果是未知节点：
+    - 调用 [`clusterRenameNode()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L1235) 函数更新临时节点 `link->node` 相关信息
+    - 移除 `HANDSHAKE` 标记位，更新主从标记位
+    - 将配置持久化
+
+    ```c
+    int clusterProcessPacket(clusterLink *link) {
+        ...
+        if (type == CLUSTERMSG_TYPE_PING || type == CLUSTERMSG_TYPE_PONG ||
+            type == CLUSTERMSG_TYPE_MEET)
+        {
+            ...
+            if (!link->inbound) {
+                if (nodeInHandshake(link->node)) {
+                    if (sender) {
+                        if (nodeUpdateAddressIfNeeded(sender,link,hdr))
+                        {
+                            clusterDoBeforeSleep(CLUSTER_TODO_SAVE_CONFIG|
+                                                CLUSTER_TODO_UPDATE_STATE);
+                        }
+                        clusterDelNode(link->node);
+                        return 0;
+                    }
+
+                    clusterRenameNode(link->node, hdr->sender);
+                    serverLog(LL_DEBUG,"Handshake with node %.40s completed.",
+                        link->node->name);
+                    link->node->flags &= ~CLUSTER_NODE_HANDSHAKE;
+                    link->node->flags |= flags&(CLUSTER_NODE_MASTER|CLUSTER_NODE_SLAVE);
+                    clusterDoBeforeSleep(CLUSTER_TODO_SAVE_CONFIG);
+                }
+                ...
+            }
+            ...
+        }
+        ...
+    }
+    ```
+
+  - 针对出站连接，节点不处于握手阶段，且节点信息不匹配：
+    - 为节点添加 `NOADDR` 标记位，清空 ip/port 信息
+    - 释放连接，并将配置持久化
+
+    ```c
+    int clusterProcessPacket(clusterLink *link) {
+        ...
+        if (type == CLUSTERMSG_TYPE_PING || type == CLUSTERMSG_TYPE_PONG ||
+            type == CLUSTERMSG_TYPE_MEET)
+        {
+            ...
+            if (!link->inbound) {
+                if (nodeInHandshake(link->node)) {
+                    ...
+                } else if (memcmp(link->node->name,hdr->sender,
+                            CLUSTER_NAMELEN) != 0)
+                {
+                    /* If the reply has a non matching node ID we
+                    * disconnect this node and set it as not having an associated
+                    * address. */
+                    serverLog(LL_DEBUG,"PONG contains mismatching sender ID. About node %.40s added %d ms ago, having flags %d",
+                        link->node->name,
+                        (int)(now-(link->node->ctime)),
+                        link->node->flags);
+                    link->node->flags |= CLUSTER_NODE_NOADDR;
+                    link->node->ip[0] = '\0';
+                    link->node->port = 0;
+                    link->node->pport = 0;
+                    link->node->cport = 0;
+                    freeClusterLink(link);
+                    clusterDoBeforeSleep(CLUSTER_TODO_SAVE_CONFIG);
+                    return 0;
+                }
+            }
+            ...
+        }
+        ...
+    }
+    ```
+
+  - 目标节点为已知节点时，重置 `NOFAILOVER` 标记位
+  - 目标为已知节点，当前为 `Ping` 消息，且非握手节阶段时，调用 [`nodeUpdateAddressIfNeeded()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L1764) 函数更新节点 `sender`，并将配置持久化
+    - `Ping` 消息由对方发起，地址信息是最准确的
+
+    ```c
+    int clusterProcessPacket(clusterLink *link) {
+        ...
+        if (type == CLUSTERMSG_TYPE_PING || type == CLUSTERMSG_TYPE_PONG ||
+            type == CLUSTERMSG_TYPE_MEET)
+        {
+            ...
+            if (sender) {
+                int nofailover = flags & CLUSTER_NODE_NOFAILOVER;
+                sender->flags &= ~CLUSTER_NODE_NOFAILOVER;
+                sender->flags |= nofailover;
+            }
+
+            /* Update the node address if it changed. */
+            if (sender && type == CLUSTERMSG_TYPE_PING &&
+                !nodeInHandshake(sender) &&
+                nodeUpdateAddressIfNeeded(sender,link,hdr))
+            {
+                clusterDoBeforeSleep(CLUSTER_TODO_SAVE_CONFIG|
+                                    CLUSTER_TODO_UPDATE_STATE);
+            }
+
+            ...
+        }
+        ...
+    }
+    ```
+
+  - 针对出站连接，处理 `Pong` 消息
+    - 将 `pong_received` 设置为当前时间
+    - 移除 `ping_sent` 标记位，表示已收到响应
+    - 如果节点被标记超时，则移除 `PFAIL` 标记位，并将配置持久化
+    - 如果节点被标记故障，调用 [`clearNodeFailureIfNeeded()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L1511) 函数来尝试清除其故障标记位
+
+    ```c
+    int clusterProcessPacket(clusterLink *link) {
+        ...
+        if (type == CLUSTERMSG_TYPE_PING || type == CLUSTERMSG_TYPE_PONG ||
+            type == CLUSTERMSG_TYPE_MEET)
+        {
+            ...
+            if (!link->inbound && type == CLUSTERMSG_TYPE_PONG) {
+                link->node->pong_received = now;
+                link->node->ping_sent = 0;
+
+                /* The PFAIL condition can be reversed without external
+                * help if it is momentary (that is, if it does not
+                * turn into a FAIL state).
+                *
+                * The FAIL condition is also reversible under specific
+                * conditions detected by clearNodeFailureIfNeeded(). */
+                if (nodeTimedOut(link->node)) {
+                    link->node->flags &= ~CLUSTER_NODE_PFAIL;
+                    clusterDoBeforeSleep(CLUSTER_TODO_SAVE_CONFIG|
+                                        CLUSTER_TODO_UPDATE_STATE);
+                } else if (nodeFailed(link->node)) {
+                    clearNodeFailureIfNeeded(link->node);
+                }
+            }
+            ...
+        }
+        ...
+    }
+    ```
+
+- **更新节点主从关系**
+  - 如果发送节点的主节点为空（`CLUSTER_NODE_NULL_NAME`），说明其是主节点
+    - 调用 [`clusterSetNodeAsMaster()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L1804) 函数，将 `sender` 设置为主节点
+    - 如果当前配置中，`sender` 是从节点，则移除其现有的主从关系，并将其标记为主节点
+    - 将配置持久化
+  - 如果发送节点存在主节点，说明其是从节点
+    - 如果当前记录节点 `sender` 是主节点，移除其槽位信息与主节点标记位，将其标记为从节点，并将配置持久化
+    - 如果主节点信息冲突，则修改主从关系，并将配置持久化
+
+    ```c
+    int clusterProcessPacket(clusterLink *link) {
+        ...
+        if (type == CLUSTERMSG_TYPE_PING || type == CLUSTERMSG_TYPE_PONG ||
+            type == CLUSTERMSG_TYPE_MEET)
+        {
+            ...
+            if (sender) {
+                if (!memcmp(hdr->slaveof,CLUSTER_NODE_NULL_NAME,
+                    sizeof(hdr->slaveof)))
+                {
+                    /* Node is a master. */
+                    clusterSetNodeAsMaster(sender);
+                } else {
+                    /* Node is a slave. */
+                    clusterNode *master = clusterLookupNode(hdr->slaveof, CLUSTER_NAMELEN);
+
+                    if (nodeIsMaster(sender)) {
+                        /* Master turned into a slave! Reconfigure the node. */
+                        clusterDelNodeSlots(sender);
+                        sender->flags &= ~(CLUSTER_NODE_MASTER|
+                                        CLUSTER_NODE_MIGRATE_TO);
+                        sender->flags |= CLUSTER_NODE_SLAVE;
+
+                        /* Update config and state. */
+                        clusterDoBeforeSleep(CLUSTER_TODO_SAVE_CONFIG|
+                                            CLUSTER_TODO_UPDATE_STATE);
+                    }
+
+                    /* Master node changed for this slave? */
+                    if (master && sender->slaveof != master) {
+                        if (sender->slaveof)
+                            clusterNodeRemoveSlave(sender->slaveof,sender);
+                        clusterNodeAddSlave(master,sender);
+                        sender->slaveof = master;
+
+                        /* Update config. */
+                        clusterDoBeforeSleep(CLUSTER_TODO_SAVE_CONFIG);
+                    }
+                }
+            }
+            ...
+        }
+        ...
+    }
+
+    void clusterSetNodeAsMaster(clusterNode *n) {
+        if (nodeIsMaster(n)) return;
+
+        if (n->slaveof) {
+            clusterNodeRemoveSlave(n->slaveof,n);
+            if (n != myself) n->flags |= CLUSTER_NODE_MIGRATE_TO;
+        }
+        n->flags &= ~CLUSTER_NODE_SLAVE;
+        n->flags |= CLUSTER_NODE_MASTER;
+        n->slaveof = NULL;
+
+        /* Update config and state. */
+        clusterDoBeforeSleep(CLUSTER_TODO_SAVE_CONFIG|
+                            CLUSTER_TODO_UPDATE_STATE);
+    }
+    ```
+
+- **更新节点槽位关系**
+  - 判断 `sender` 或 `sender->slaveof` 的槽位信息是否发生变化
+  - 如果 `sender` 是主节点，且槽位信息发送变化，则调用 [`clusterUpdateSlotsConfigWith()](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L1831) 函数更新其配置
+
+    ```c
+    int clusterProcessPacket(clusterLink *link) {
+        ...
+        if (type == CLUSTERMSG_TYPE_PING || type == CLUSTERMSG_TYPE_PONG ||
+            type == CLUSTERMSG_TYPE_MEET)
+        {
+            ...
+            clusterNode *sender_master = NULL; /* Sender or its master if slave. */
+            int dirty_slots = 0; /* Sender claimed slots don't match my view? */
+
+            if (sender) {
+                sender_master = nodeIsMaster(sender) ? sender : sender->slaveof;
+                if (sender_master) {
+                    dirty_slots = memcmp(sender_master->slots,
+                            hdr->myslots,sizeof(hdr->myslots)) != 0;
+                }
+            }
+
+            if (sender && nodeIsMaster(sender) && dirty_slots)
+                clusterUpdateSlotsConfigWith(sender,senderConfigEpoch,hdr->myslots);
+            ...
+        }
+        ...
+    }
+    ```
+
+  - 如果槽位发生变化，循环判断发送方的槽位配置是否过期
+    - 比较 `server.cluster->slots[j]->configEpoch` 和 `senderConfigEpoch` 大小
+    - 如果发送者的配置过期，则调用 [`clusterSendUpdate()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L3127) 函数发送 `update` 消息
+
+    ```c
+    int clusterProcessPacket(clusterLink *link) {
+        ...
+        if (type == CLUSTERMSG_TYPE_PING || type == CLUSTERMSG_TYPE_PONG ||
+            type == CLUSTERMSG_TYPE_MEET)
+        {
+            ...
+            if (sender && dirty_slots) {
+                int j;
+
+                for (j = 0; j < CLUSTER_SLOTS; j++) {
+                    if (bitmapTestBit(hdr->myslots,j)) {
+                        if (server.cluster->slots[j] == sender ||
+                            server.cluster->slots[j] == NULL) continue;
+                        if (server.cluster->slots[j]->configEpoch >
+                            senderConfigEpoch)
+                        {
+                            serverLog(LL_VERBOSE,
+                                "Node %.40s has old slots configuration, sending "
+                                "an UPDATE message about %.40s",
+                                    sender->name, server.cluster->slots[j]->name);
+                            clusterSendUpdate(sender->link,
+                                server.cluster->slots[j]);
+
+                            /* TODO: instead of exiting the loop send every other
+                            * UPDATE packet for other nodes that are the new owner
+                            * of sender's slots. */
+                            break;
+                        }
+                    }
+                }
+            }
+            ...
+        }
+        ...
+    }
+    ```
+
+- **处理配置冲突**
+  - 如果当前节点与发送方都是主节点，且配置版本一致，说明出现冲突
+  - 调用 [`clusterHandleConfigEpochCollision()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L1363) 函数进行处理
+  - 函数内部根据节点名称的字典序，确保仅由节点 ID 较大的一方来处理
+  - 解决冲突时，直接将集群的版本自增，然后将当前节点的配置更新为集群的最新版本，并将配置持久化
+
+    ```c
+    int clusterProcessPacket(clusterLink *link) {
+        ...
+        if (type == CLUSTERMSG_TYPE_PING || type == CLUSTERMSG_TYPE_PONG ||
+            type == CLUSTERMSG_TYPE_MEET)
+        {
+            ...
+            if (sender &&
+                nodeIsMaster(myself) && nodeIsMaster(sender) &&
+                senderConfigEpoch == myself->configEpoch)
+            {
+                clusterHandleConfigEpochCollision(sender);
+            }
+            ...
+        }
+        ...
+    }
+
+    void clusterHandleConfigEpochCollision(clusterNode *sender) {
+        /* Prerequisites: nodes have the same configEpoch and are both masters. */
+        if (sender->configEpoch != myself->configEpoch ||
+            !nodeIsMaster(sender) || !nodeIsMaster(myself)) return;
+        /* Don't act if the colliding node has a smaller Node ID. */
+        if (memcmp(sender->name,myself->name,CLUSTER_NAMELEN) <= 0) return;
+        /* Get the next ID available at the best of this node knowledge. */
+        server.cluster->currentEpoch++;
+        myself->configEpoch = server.cluster->currentEpoch;
+        clusterSaveConfigOrDie(1);
+        serverLog(LL_VERBOSE,
+            "WARNING: configEpoch collision with node %.40s."
+            " configEpoch set to %llu",
+            sender->name,
+            (unsigned long long) myself->configEpoch);
+    }
+    ```
+
+- **更新 Gossip 信息**
+  - 调用 [`clusterProcessGossipSection()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L1627) 函数处理 Gossip 节点信息
+  - 对于已知节点，会更新故障标记、`Pong` 时间戳与节点地址信息
+  - 对于未知节点，且节点信息正常，会创建新节点并加入集群
+
+    ```c
+    int clusterProcessPacket(clusterLink *link) {
+        ...
+        if (type == CLUSTERMSG_TYPE_PING || type == CLUSTERMSG_TYPE_PONG ||
+            type == CLUSTERMSG_TYPE_MEET)
+        {
+            ...
+            if (sender) {
+                clusterProcessGossipSection(hdr,link);
+                clusterProcessPingExtensions(hdr,link);
+            }
+        }
+        ...
+    }
+    ```
 
 ## 故障转移
 
