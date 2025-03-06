@@ -1131,15 +1131,7 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
 }
 ```
 
-[`clusterCron()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L3975) 函数负责维护集群状态、处理节点间通信、故障检测与恢复等关键操作。
-
-关键设计要点
-双循环结构：首次循环处理链接资源，二次循环处理状态检测，避免资源操作影响状态判断。
-随机 PING 策略：平衡网络开销与故障检测灵敏度，避免集中探测。
-渐进式故障标记：先标记 PFAIL，再通过 gossip 协议协商确认 FAIL 状态，防止误判。
-资源管理：动态调整缓冲区、释放闲置链接，优化内存使用。
-从节点自治：从节点主动参与故障转移决策，提升集群可用性。
-通过以上流程，clusterCron 确保了 Redis 集群的高可用性、数据一致性及资源高效利用。
+[`clusterCron()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L3975) 函数负责维护集群状态、处理节点间通信、故障检测与恢复等关键操作，其核心逻辑如下所示：
 
 - **初始化**
   - 调用 [`clusterUpdateMyselfHostname()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L601) 函数更新主机名
@@ -1269,7 +1261,6 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
             }
             ...
         }
-        dictReleaseIterator(di);
         ...
     }
     ```
@@ -1302,13 +1293,12 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
             }
             ...
         }
-        dictReleaseIterator(di);
         ...
     }
     ```
 
-- **故障判断**
-  - 当 `ping` 命令响应和数据响应均超时，且未标记故障，则添加疑似故障标记位 `CLUSTER_NODE_PFAIL`
+- **主观下线**
+  - 当 `ping` 命令响应和数据响应均超时，且未标记故障，则添加主观下线标记位 `CLUSTER_NODE_PFAIL`
   - 设置更新标记位 `update_state`，后续将更新集群配置，并广播
 
     ```c
@@ -1330,7 +1320,6 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
                 }
             }
         }
-        dictReleaseIterator(di);
         ...
     }
     ```
@@ -1584,20 +1573,20 @@ int clusterProcessPacket(clusterLink *link) {
 }
 ```
 
-### Ping & Pong & Meet
+### PING & PONG & MEET
 
-[`clusterSendPing()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L2880) 函数用于发送 `Ping`、 `Pong` 和 `Meet` 消息，在维持心跳以外，其核心是通过 Gossip 协议，传播当前节点中所维护的，集群中其他节点的状态，从而确保集群状态的一致性。其中各消息的触发时机如下所示：
+[`clusterSendPing()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L2880) 函数用于发送 `PING`、 `PONG` 和 `MEET` 消息，在维持心跳以外，其核心是通过 Gossip 协议，传播当前节点中所维护的，集群中其他节点的状态，从而确保集群状态的一致性。其中各消息的触发时机如下所示：
 
-- `Ping`
+- `PING`
   - 建立连接时，向目标节点发送
   - 定时任务中，随机选择部分节点发送
   - 故障转移流程中，主动触发状态同步，并增加定时任务中的触发频率
 
-- `Meet`
-  - 节点间首次建立连接时，替代 `Ping` 消息，让目标节点添加当前节点至其配置中，
+- `MEET`
+  - 节点间首次建立连接时，替代 `PING` 消息，让目标节点添加当前节点至其配置中，
 
-- `Pong`
-  - 节点收到 `Ping` 或 `Pong` 消息时进行响应
+- `PONG`
+  - 节点收到 `PING` 或 `PONG` 消息时进行响应
   - 自身状态发送重大变化时，例如槽位迁移或故障转移，主动向其他节点广播
 
 Gossip 结构体为 [`clusterMsgDataGossip`](https://github.com/redis/redis/blob/7.0.0/src/cluster.h#L225)，主要包含节点名称、心跳信息、IP/Port 信息和节点当前状态：
@@ -1776,7 +1765,7 @@ typedef struct {
 [`clusterProcessPacket()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L2065) 函数中，针对 `PING & PONG & MEET` 类型的消息，处理逻辑如下所示：
 
 - **更新 IP 配置**
-  - 若请求类型为 `MEET`，或当前节点 IP 未初始化，则更新 IP 地址
+  - 若为 `MEET` 消息，或当前节点 IP 未初始化，则更新 IP 地址
   - 调用 `connSockName()` 函数获取本地 IP 地址
   - 调用 [`clusterDoBeforeSleep()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L4221) 函数来触发配置持久化
 
@@ -1804,8 +1793,8 @@ typedef struct {
     }
     ```
 
-- **处理 Meet 消息**
-  - 针对 `MEET` 类型的消息，创建新节点，然后将其添加至集群中，并将配置持久化
+- **处理 MEET 消息**
+  - 针对 `MEET` 消息，创建新节点，然后将其添加至集群中，并将配置持久化
   - 调用 [`clusterProcessGossipSection()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L1627) 函数处理 Gossip 节点信息
 
     ```c
@@ -1833,8 +1822,8 @@ typedef struct {
     }
     ```
 
-- **响应 Pong 命令**
-  - 针对 `Ping` 与 `Meet` 消息，最终强制调用 [`clusterSendPing()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L2880) 函数发送 `Pong` 消息
+- **响应 PONG 命令**
+  - 针对 `PING` 与 `MEET` 消息，最终强制调用 [`clusterSendPing()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L2880) 函数发送 `PONG` 消息
 
     ```c
     int clusterProcessPacket(clusterLink *link) {
@@ -1932,8 +1921,8 @@ typedef struct {
     ```
 
   - 目标节点为已知节点时，重置 `NOFAILOVER` 标记位
-  - 目标为已知节点，当前为 `Ping` 消息，且非握手节阶段时，调用 [`nodeUpdateAddressIfNeeded()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L1764) 函数更新节点 `sender`，并将配置持久化
-    - `Ping` 消息由对方发起，地址信息是最准确的
+  - 目标为已知节点，当前为 `PING` 消息，且非握手节阶段时，调用 [`nodeUpdateAddressIfNeeded()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L1764) 函数更新节点 `sender`，并将配置持久化
+    - `PING` 消息由对方发起，地址信息是最准确的
 
     ```c
     int clusterProcessPacket(clusterLink *link) {
@@ -1963,11 +1952,11 @@ typedef struct {
     }
     ```
 
-  - 针对出站连接，处理 `Pong` 消息
+  - 针对出站连接，处理 `PONG` 消息
     - 将 `pong_received` 设置为当前时间
     - 移除 `ping_sent` 标记位，表示已收到响应
-    - 如果节点被标记超时，则移除 `PFAIL` 标记位，并将配置持久化
-    - 如果节点被标记故障，调用 [`clearNodeFailureIfNeeded()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L1511) 函数来尝试清除其故障标记位
+    - 如果节点被标记超时，即主观下线，则移除 `PFAIL` 标记位，并将配置持久化
+    - 如果节点被标记客观下线，调用 [`clearNodeFailureIfNeeded()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L1511) 函数来清除其下线标记位
 
     ```c
     int clusterProcessPacket(clusterLink *link) {
@@ -2104,7 +2093,7 @@ typedef struct {
 
   - 如果槽位发生变化，循环判断发送方的槽位配置是否过期
     - 比较 `server.cluster->slots[j]->configEpoch` 和 `senderConfigEpoch` 大小
-    - 如果发送者的配置过期，则调用 [`clusterSendUpdate()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L3127) 函数发送 `update` 消息
+    - 如果发送者的配置过期，则调用 [`clusterSendUpdate()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L3127) 函数发送 `UPDATE` 消息
 
     ```c
     int clusterProcessPacket(clusterLink *link) {
@@ -2188,7 +2177,7 @@ typedef struct {
 
 - **更新 Gossip 信息**
   - 调用 [`clusterProcessGossipSection()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L1627) 函数处理 Gossip 节点信息
-  - 对于已知节点，会更新故障标记、`Pong` 时间戳与节点地址信息
+  - 对于已知节点，会更新故障标记、`PONG` 时间戳与节点地址信息
   - 对于未知节点，且节点信息正常，会创建新节点并加入集群
 
     ```c
@@ -2209,18 +2198,377 @@ typedef struct {
 
 ## 故障转移
 
-高可用性与自动故障转移
-主从复制：
-每个主节点（Master）可以有多个从节点（Slave），主节点负责写入，从节点异步复制数据。
-当主节点宕机时，从节点会自动升级为主节点，继续提供服务。
-故障检测与恢复：
-节点间通过 Gossip 协议定期交换状态信息，检测节点是否存活。
-若主节点故障，其他主节点会通过投票机制（类似 Raft 算法）触发故障转移，提升从节点为新主节点。
-优势：
-服务持续可用：故障转移通常在秒级完成，对客户端透明。
-无需人工干预：集群自动处理节点故障。
+### 主观下线（PFAIL）
 
-## 数据迁移
+Cluster 的定时任务 [`clusterCron()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L3975) 中，针对响应超时的节点，则添加主观下线标记位 `CLUSTER_NODE_PFAIL`：
+
+```c
+void clusterCron(void) {
+    ...
+    while((de = dictNext(di)) != NULL) {
+        ...
+        mstime_t node_delay = (ping_delay < data_delay) ? ping_delay :
+                                                        data_delay;
+
+        if (node_delay > server.cluster_node_timeout) {
+            /* Timeout reached. Set the node as possibly failing if it is
+            * not already in this state. */
+            if (!(node->flags & (CLUSTER_NODE_PFAIL|CLUSTER_NODE_FAIL))) {
+                serverLog(LL_DEBUG,"*** NODE %.40s possibly failing",
+                    node->name);
+                node->flags |= CLUSTER_NODE_PFAIL;
+                update_state = 1;
+            }
+        }
+    }
+    ...
+}
+```
+
+### 客观下线（FAIL）
+
+在处理 Gossip 信息时，即 [`clusterProcessGossipSection()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L1627) 函数中，会专门对节点的故障状态做处理：
+
+- 如果节点处于 `FAIL` 或 `PFAIL` 状态
+  - 调用 [`clusterNodeAddFailureReport()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L996) 添加故障报告，如果重复添加报告，会更新报告有效期
+  - 调用 [`markNodeAsFailingIfNeeded()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L1479) 函数，根据当前故障报告数量，判断是否要将节点标记为 `FAIL` 状态
+- 如果节点处于正常状态
+  - 调用 [`clusterNodeDelFailureReport()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L1053) 函数，移除故障报告
+
+```c
+void clusterProcessGossipSection(clusterMsg *hdr, clusterLink *link) {
+    ...
+    while(count--) {
+        ...
+        /* Update our state accordingly to the gossip sections */
+        node = clusterLookupNode(g->nodename, CLUSTER_NAMELEN);
+        if (node) {
+            /* We already know this node.
+               Handle failure reports, only when the sender is a master. */
+            if (sender && nodeIsMaster(sender) && node != myself) {
+                if (flags & (CLUSTER_NODE_FAIL|CLUSTER_NODE_PFAIL)) {
+                    if (clusterNodeAddFailureReport(node,sender)) {
+                        serverLog(LL_VERBOSE,
+                            "Node %.40s reported node %.40s as not reachable.",
+                            sender->name, node->name);
+                    }
+                    markNodeAsFailingIfNeeded(node);
+                } else {
+                    if (clusterNodeDelFailureReport(node,sender)) {
+                        serverLog(LL_VERBOSE,
+                            "Node %.40s reported node %.40s is back online.",
+                            sender->name, node->name);
+                    }
+                }
+            }
+            ...
+        }
+        ...
+    }
+}
+```
+
+在 [`markNodeAsFailingIfNeeded()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L1479) 函数中，会调用 [`clusterNodeFailureReportsCount()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L1076) 计算当前有效的故障报告的数量，函数内部会先调用 [`clusterNodeCleanupFailureReports()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L1026) 函数清理过期报告，再进行统计。如果故障报告数量大于集群节点数量的一半，即满足 `needed_quorum`，会将节点标记为 `FAIL` 状态，然后调用 [`clusterSendFail()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L3115) 函数广播 `FAIL` 消息。
+
+```c
+void markNodeAsFailingIfNeeded(clusterNode *node) {
+    int failures;
+    int needed_quorum = (server.cluster->size / 2) + 1;
+
+    if (!nodeTimedOut(node)) return; /* We can reach it. */
+    if (nodeFailed(node)) return; /* Already FAILing. */
+
+    failures = clusterNodeFailureReportsCount(node);
+    /* Also count myself as a voter if I'm a master. */
+    if (nodeIsMaster(myself)) failures++;
+    if (failures < needed_quorum) return; /* No weak agreement from masters. */
+
+    serverLog(LL_NOTICE,
+        "Marking node %.40s as failing (quorum reached).", node->name);
+
+    /* Mark the node as failing. */
+    node->flags &= ~CLUSTER_NODE_PFAIL;
+    node->flags |= CLUSTER_NODE_FAIL;
+    node->fail_time = mstime();
+
+    clusterSendFail(node->name);
+    clusterDoBeforeSleep(CLUSTER_TODO_UPDATE_STATE|CLUSTER_TODO_SAVE_CONFIG);
+}
+
+int clusterNodeFailureReportsCount(clusterNode *node) {
+    clusterNodeCleanupFailureReports(node);
+    return listLength(node->fail_reports);
+}
+
+void clusterSendFail(char *nodename) {
+    clusterMsg buf[1];
+    clusterMsg *hdr = (clusterMsg*) buf;
+
+    clusterBuildMessageHdr(hdr,CLUSTERMSG_TYPE_FAIL);
+    memcpy(hdr->data.fail.about.nodename,nodename,CLUSTER_NAMELEN);
+    clusterBroadcastMessage(buf,ntohl(hdr->totlen));
+}
+```
+
+### 故障恢复
+
+Cluster 的定时任务 [`clusterCron()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L3975) 中，如果当前节点是从节点，且未设置禁止自动故障转移标记位 `CLUSTER_MODULE_FLAG_NO_FAILOVER`，会调用 [`clusterHandleSlaveFailover()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L3518) 函数，处理自动故障转移逻辑。
+
+```c
+void clusterCron(void) {
+    ...
+    if (nodeIsSlave(myself)) {
+        clusterHandleManualFailover();
+        if (!(server.cluster_module_flags & CLUSTER_MODULE_FLAG_NO_FAILOVER))
+            clusterHandleSlaveFailover();
+        ...
+    }
+    ...
+}
+```
+
+在 [`clusterHandleSlaveFailover()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L3518) 函数的核心逻辑，如下所示：
+
+- **参数初始化**
+  - 初始化必要参数
+
+    ```c
+    void clusterHandleSlaveFailover(void) {
+        mstime_t data_age;
+        mstime_t auth_age = mstime() - server.cluster->failover_auth_time;
+        int needed_quorum = (server.cluster->size / 2) + 1;
+        int manual_failover = server.cluster->mf_end != 0 &&
+                            server.cluster->mf_can_start;
+        mstime_t auth_timeout, auth_retry_time;
+
+        server.cluster->todo_before_sleep &= ~CLUSTER_TODO_HANDLE_FAILOVER;
+
+        auth_timeout = server.cluster_node_timeout*2;
+        if (auth_timeout < 2000) auth_timeout = 2000;
+        auth_retry_time = auth_timeout*2;
+        ...
+    }
+    ```
+
+- **前置条件检查**
+  - 当前节点必须为从节点
+  - 当前节点必须有主节点，且处于故障状态，或正进行手动故障转移
+  - 当前未启用禁止自动故障转移配置 `cluster-slave-no-failover`，或正进行手动故障转移
+  - 对应主节点必须有负责的槽位
+
+    ```c
+    void clusterHandleSlaveFailover(void) {
+        ...
+        if (nodeIsMaster(myself) ||
+            myself->slaveof == NULL ||
+            (!nodeFailed(myself->slaveof) && !manual_failover) ||
+            (server.cluster_slave_no_failover && !manual_failover) ||
+            myself->slaveof->numslots == 0)
+        {
+            /* There are no reasons to failover, so we set the reason why we
+            * are returning without failing over to NONE. */
+            server.cluster->cant_failover_reason = CLUSTER_CANT_FAILOVER_NONE;
+            return;
+        }
+        ...
+    }
+    ```
+
+- **检查从节点状态**
+  - 计算与主节点的断连时长，并减去网络波动超时时间 `cluster_node_timeout`
+    - 若处于连接状态，计算最后交互的时间
+    - 否则取断开时间
+  - 断连时长超过一定期限，认为数据过旧，除非手动故障转移
+
+    ```c
+    void clusterHandleSlaveFailover(void) {
+        ...
+        if (server.repl_state == REPL_STATE_CONNECTED) {
+            data_age = (mstime_t)(server.unixtime - server.master->lastinteraction)
+                    * 1000;
+        } else {
+            data_age = (mstime_t)(server.unixtime - server.repl_down_since) * 1000;
+        }
+
+        if (data_age > server.cluster_node_timeout)
+            data_age -= server.cluster_node_timeout;
+
+        if (server.cluster_slave_validity_factor &&
+            data_age >
+            (((mstime_t)server.repl_ping_slave_period * 1000) +
+            (server.cluster_node_timeout * server.cluster_slave_validity_factor)))
+        {
+            if (!manual_failover) {
+                clusterLogCantFailover(CLUSTER_CANT_FAILOVER_DATA_AGE);
+                return;
+            }
+        }
+        ...
+    }
+    ```
+
+- **更新延迟时间**
+  - 若之前的选举已经超时，且到达重试时间，则重置选举相关属性，并额外添加一定的延迟时间
+  - 在初始化或重置选举时间时，均调用 [`clusterGetSlaveRank()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L3393) 函数获取从节点偏移量的排名，并根据排名，添加相对应的延迟时间
+    - 保障偏移量大的节点，优先发起选举
+  - 针对手动故障转移，立即触发选举，不添加延迟时间
+
+    ```c
+    void clusterHandleSlaveFailover(void) {
+        ...
+        if (auth_age > auth_retry_time) {
+            server.cluster->failover_auth_time = mstime() +
+                500 + /* Fixed delay of 500 milliseconds, let FAIL msg propagate. */
+                random() % 500; /* Random delay between 0 and 500 milliseconds. */
+            server.cluster->failover_auth_count = 0;
+            server.cluster->failover_auth_sent = 0;
+            server.cluster->failover_auth_rank = clusterGetSlaveRank();
+
+            server.cluster->failover_auth_time +=
+                server.cluster->failover_auth_rank * 1000;
+            if (server.cluster->mf_end) {
+                server.cluster->failover_auth_time = mstime();
+                server.cluster->failover_auth_rank = 0;
+                clusterDoBeforeSleep(CLUSTER_TODO_HANDLE_FAILOVER);
+            }
+            serverLog(LL_WARNING,
+                "Start of election delayed for %lld milliseconds "
+                "(rank #%d, offset %lld).",
+                server.cluster->failover_auth_time - mstime(),
+                server.cluster->failover_auth_rank,
+                replicationGetSlaveOffset());
+            clusterBroadcastPong(CLUSTER_BROADCAST_LOCAL_SLAVES);
+            return;
+        }
+
+        if (server.cluster->failover_auth_sent == 0 &&
+            server.cluster->mf_end == 0)
+        {
+            int newrank = clusterGetSlaveRank();
+            if (newrank > server.cluster->failover_auth_rank) {
+                long long added_delay =
+                    (newrank - server.cluster->failover_auth_rank) * 1000;
+                server.cluster->failover_auth_time += added_delay;
+                server.cluster->failover_auth_rank = newrank;
+                serverLog(LL_WARNING,
+                    "Replica rank updated to #%d, added %lld milliseconds of delay.",
+                    newrank, added_delay);
+            }
+        }
+        ...
+    }
+    ```
+
+- **处理时间窗口**
+  - 若未到达预定时间 `failover_auth_time`，直接结束
+  - 若选举超时，直接结束
+
+    ```c
+    void clusterHandleSlaveFailover(void) {
+        ...
+        if (mstime() < server.cluster->failover_auth_time) {
+            clusterLogCantFailover(CLUSTER_CANT_FAILOVER_WAITING_DELAY);
+            return;
+        }
+
+        if (auth_age > auth_timeout) {
+            clusterLogCantFailover(CLUSTER_CANT_FAILOVER_EXPIRED);
+            return;
+        }
+        ...
+    }
+    ```
+
+- **发起选举请求**
+  - 若还未发起投票请求，则调用 [`clusterRequestFailoverAuth()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L3236) 函数广播 `FAILOVER_AUTH_REQUEST` 消息，发起选举投票
+
+    ```c
+    void clusterHandleSlaveFailover(void) {
+        ...
+        if (server.cluster->failover_auth_sent == 0) {
+            server.cluster->currentEpoch++;
+            server.cluster->failover_auth_epoch = server.cluster->currentEpoch;
+            serverLog(LL_WARNING,"Starting a failover election for epoch %llu.",
+                (unsigned long long) server.cluster->currentEpoch);
+            clusterRequestFailoverAuth();
+            server.cluster->failover_auth_sent = 1;
+            clusterDoBeforeSleep(CLUSTER_TODO_SAVE_CONFIG|
+                                CLUSTER_TODO_UPDATE_STATE|
+                                CLUSTER_TODO_FSYNC_CONFIG);
+            return; /* Wait for replies. */
+        }
+        ...
+    }
+    ```
+
+- **处理选举结果**
+  - 如果票数超过集群数量的一半，即满足 `needed_quorum`，则将其更新为主节点
+  - 修改当前节点的版本，使其保持最新
+  - 调用 [`clusterFailoverReplaceYourMaster()`](https://github.com/redis/redis/blob/7.0.0/src/cluster.c#L3480) 函数晋升为主节点
+
+    ```c
+    void clusterHandleSlaveFailover(void) {
+        ...
+        if (server.cluster->failover_auth_count >= needed_quorum) {
+            /* We have the quorum, we can finally failover the master. */
+
+            serverLog(LL_WARNING,
+                "Failover election won: I'm the new master.");
+
+            /* Update my configEpoch to the epoch of the election. */
+            if (myself->configEpoch < server.cluster->failover_auth_epoch) {
+                myself->configEpoch = server.cluster->failover_auth_epoch;
+                serverLog(LL_WARNING,
+                    "configEpoch set to %llu after successful failover",
+                    (unsigned long long) myself->configEpoch);
+            }
+
+            /* Take responsibility for the cluster slots. */
+            clusterFailoverReplaceYourMaster();
+        } else {
+            clusterLogCantFailover(CLUSTER_CANT_FAILOVER_WAITING_VOTES);
+        }
+    }
+    ```
+
+- **节点晋升**
+  - 修改主从标记位
+  - 迁移哈希槽
+  - 更新状态和配置
+  - 广播 `PONG` 消息，通知状态变化
+  - 重置故障转移状态
+
+    ```c
+    void clusterFailoverReplaceYourMaster(void) {
+        int j;
+        clusterNode *oldmaster = myself->slaveof;
+
+        if (nodeIsMaster(myself) || oldmaster == NULL) return;
+
+        /* 1) Turn this node into a master. */
+        clusterSetNodeAsMaster(myself);
+        replicationUnsetMaster();
+
+        /* 2) Claim all the slots assigned to our master. */
+        for (j = 0; j < CLUSTER_SLOTS; j++) {
+            if (clusterNodeGetSlotBit(oldmaster,j)) {
+                clusterDelSlot(j);
+                clusterAddSlot(myself,j);
+            }
+        }
+
+        /* 3) Update state and save config. */
+        clusterUpdateState();
+        clusterSaveConfigOrDie(1);
+
+        /* 4) Pong all the other nodes so that they can update the state
+        *    accordingly and detect that we switched to master role. */
+        clusterBroadcastPong(CLUSTER_BROADCAST_ALL);
+
+        /* 5) If there was a manual failover in progress, clear the state. */
+        resetManualFailover();
+    }
+    ```
 
 ## Q & A
 
@@ -2283,3 +2631,4 @@ typedef struct {
 - [Scale with Redis Cluster](https://redis.io/docs/latest/operate/oss_and_stack/management/scaling/)
 - [redis源码解析 pdf redis cluster 源码](https://blog.51cto.com/u_16099274/6468543)
 - <https://github.com/SkyRainCho/redisDoc/blob/master/redis/cluster.md>
+- [Redis集群（终篇）——故障自动检测与自动恢复（附优质Redis资源汇总）](https://zhuanlan.zhihu.com/p/106110578)
