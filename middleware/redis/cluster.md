@@ -2626,6 +2626,12 @@ void clusterCron(void) {
     }
     ```
 
+3. 集群迁移的方式
+
+   - 先调用 `importing` 和 `migrating` 指定槽位迁移，修改槽位状态
+   - 然后调用 `getkeysinslot` 命令获取槽位的所有的 key
+   - 最后执行 `migrate` 命令，迁出节点会将 key 对应 value 发给迁入节点
+
 ## Ref
 
 - [Scale with Redis Cluster](https://redis.io/docs/latest/operate/oss_and_stack/management/scaling/)
