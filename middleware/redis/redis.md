@@ -59,6 +59,14 @@ Redis 是一个基于内存的 KV 数据库，提供了极高的读写性能和�
     </tr>
 </table>
 
+## 线程模型
+
+![redis_thread_model](images/redis_thread_model.png)
+
+Redis 主要采用单线程模型，在主线程中完成网络 I/O、命令处理、数据读写等操作，在后台线程执行非阻塞命令或 AOF、RDB、数据清理等耗时任务。
+
+在 6.0 版本中，支持了多线程处理网络 I/O，提高序列化等操作性能，但是对于命令执行等任务，仍在主线程中进行。
+
 ## High Availability
 
 - 持久化
@@ -67,44 +75,40 @@ Redis 是一个基于内存的 KV 数据库，提供了极高的读写性能和�
   - 多服务器对外提供服务，避免单机故障问题
   - 通过一主多从的架构，实现集群间的数据一致性
 - 哨兵
-  - 在主从架构的基础上，提供主从故障转移的能力
+  - 在主从架构的基础上，提供自动故障转移的能力
+- 集群
+  - 数据分片存储，支持横向拓展
+  - 每个分片由主从节点构成，支持自动故障转移能力
 
-## Connect
+## High Performance
 
-> <https://redis.io/try-free/>
+- 内存存储
+  - 数据全部在内存中，读写速度极高
+- 单线程模型
+  - 使用单线程来处理网络 I/O 和读写逻辑，避免线程切换和资源竞争
+  - 网络 I/O 多路复用，支持单线程处理大量并发连接
+- 多线程优化
+  - 引入多线程处理网络 I/O 和序列化，提高并发能力
+- 批处理
+  - 命令支持批处理，减少网络 I/O 次数
 
-### Golang
+## High Concurrency
 
-首先导入 go-redis：
+- 网络 I/O 多路复用
+  - 提高并发能力
+- 主从 & 集群
+  - 通过读写分离、数据分片的方式，分散读写压力
+- 高性能
+  - 能够快速响应请求
 
-```shell
-go get -u github.com/go-redis/redis
-```
+## Q & A
 
-然后配置 redis 服务器相关参数，可以在[官网](https://redis.io/try-free/)免费运行云服务器
+1. big-key
 
-```go
-client := redis.NewClient(&redis.Options{
-    Addr:     "xxx:yyy",
-    Password: "xxxxxxx",
-})
-```
-
-连接后，简单进行测试：
-
-```go
-err := client.Set("key", "value", 0).Err()
-if err != nil {
-    fmt.Println(err)
-}
-
-val, err := client.Get("key").Result()
-if err != nil {
-    fmt.Println(err)
-}
-fmt.Println("key:", val)
-```
+   - 影响 AOF 的 fsync 过程，在 Always 策略下，可能会阻塞主线程
+   - 影响 AOF 重写和 RDB 构建过程，两者都会通过子进程进行处理，如果触发大 Key 的写时复制策略，可能会阻塞主线程
 
 ## Ref
 
 - <https://xiaolincoding.com/redis/module/strategy.html>
+- <https://xiaolincoding.com/redis/base/redis_interview.html>
