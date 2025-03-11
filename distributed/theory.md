@@ -228,4 +228,5 @@ BASE 理论是 CAP 理论的延伸，也可看做是对于 AP 系统的补充，
 ## Ref
 
 - [wiki/CAP定理](https://zh.wikipedia.org/wiki/CAP%E5%AE%9A%E7%90%86)
+- <https://zhuanlan.zhihu.com/p/557305743?utm_psn=1873521926229610496>
 - <https://javaguide.cn/distributed-system/protocol/cap-and-base-theorem.html>
