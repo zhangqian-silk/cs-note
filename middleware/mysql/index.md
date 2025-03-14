@@ -156,6 +156,8 @@ B+Tree 在插入新数据时，必须保障整体仍然是有序的。如果向�
 
 此时，查询只需扫描索引结构而无需回表查找数据行，能够显著减少磁盘 I/O 和内存消耗，从而提升查询效率。
 
+即使遇到常规意义上**索引失效**的场景，例如复合索引 `(A, B, C)`，查询语句为 `select A,B,C from t where A like %xxx`，因为满足**覆盖索引**的条件，所以也会选择走索引进行遍历，而非全盘扫描。
+
 ### 索引下推
 
 **索引下推**（Index Condition Pushdown，简称ICP）是 MySQL 5.6 引入的查询优化技术，核心目标是通过将 WHERE 条件中可索引的过滤操作下推到存储引擎层执行，是对联合索引不满足最左匹配的部分场景的特殊优化策略。
@@ -182,9 +184,68 @@ B+Tree 在插入新数据时，必须保障整体仍然是有序的。如果向�
 
 ## 索引失效
 
+索引能够提供查询效率，但是索引的高效性依赖于以下两个条件：
+
+- **有序性**：按照索引键顺序存储
+- **快速定位**：通过树的分层结果，快速定位目标元素范围
+
+当优化器判断当前语句无法利用上述两个特点时，即数据结构不匹配时，索引就会失去价值，转而使用全表扫描的方案来替代索引。
+
+即索引失效的核心是 **B+ 树的结构特性无法支持查询的高效执行**，本质是**全盘扫描的成本低于索引**。例如当**索引失效**时，如果满足**覆盖索引**的条件，仍会选择索引进行遍历。
+
+以下是常见的**索引失效**的场景：
+
+**模糊匹配**
+
+- **示例**： `like %xxx` 或 `like %xxx%`
+- **原因**：前缀是不确定的，无法利用索引的有序性
+
+**违法最左匹配**
+
+- **示例**：复合索引 `(A, B, C)`，但查询条件未从最左列 `A` 开始，或中间跳过了某一列。
+- **原因**：复合索引按列顺序构建，未使用最左列时无法利用索引树结构
+
+**函数/表达式**
+
+- **场景**：在 WHERE 条件中对索引列使用函数、数学运算或表达式，例如 `length(name) = xx` 或 `age + 1 = 19`，
+- **原因**：索引存储的是原始值，计算后的值无法直接匹配索引结构
+
+**隐式类型转换**
+
+- **场景**：索引列与查询值类型不匹配，导致 MySQL 自动转换类型，例如 `column = 123`，其中 `column` 是 VARCHAR 类型
+- **原因**：在字符串与数字比较时，会自动将字符串转为数字，类型转换等价于对列应用函数（如 `CAST`），导致无法使用索引。
+
+**使用 OR 连接非索引列**
+
+- **场景**：OR 连接的多个条件中存在未索引的列，例如 `indexed_column = 'a' OR non_indexed_column = 'b'`
+- **原因**：当非索引列元素量较大时，无法仅通过索引列快速定位目标元素的范围，会转为使用全表扫描
+
+**数据分布不均**
+
+- **场景**：当索引列的值重复率极高，如 `gender = 'M'`，但是 90% 的数据都是 `'m'`，或是 `NULL` 值占比较大
+- **原因**：高重复值时，无法通过索引快速定位元素，全表扫描成本更低
+
+**使用 `!=`、`<>` 或 `NOT IN`**
+
+- **场景**：查询条件包含不等于操作符或排除值列表，如 `column != 100`、`column NOT IN (1, 2, 3)`
+- **原因**：需要扫描所有数据进行判断，也无法利用索引来快速定位
+
+**排序不符合索引顺序**
+
+- **场景**：`ORDER BY` 的列顺序或方向与索引不一致，例如符合索引 `(A, B)`，查询语句为 `ORDER BY B, A`
+- **原因**：索引按定义顺序排序，不匹配时无法利用索引排序
+
+**JOIN 时字符集或排序规则不匹配**
+
+- **场景**：关联表的字符集或排序规则不一致，例如 `FROM table1 JOIN table2 ON table1.column = table2.column`，表1的字符集为 utf8mb4，表2为 latin1
+- **原因**：字符集转换导致索引失效
+
 ## Ref
 
-- <https://xiaolincoding.com/mysql/index/index_interview.html>
 - <https://javaguide.cn/database/mysql/mysql-index.html>
 - <https://jums.gitbook.io/mysql-shi-zhan-45-jiang/04-shen-ru-qian-chu-suo-yin-shang>
-- <https://xiaolincoding.com/mysql/index/page.html#>
+- <https://jums.gitbook.io/mysql-shi-zhan-45-jiang/05-shen-ru-qian-chu-suo-yin-xia>
+- <https://xiaolincoding.com/mysql/index/index_interview.html>
+- <https://xiaolincoding.com/mysql/index/page.html>
+- <https://xiaolincoding.com/mysql/index/index_lose.html>
+- <https://xiaolincoding.com/mysql/index/index_issue.html>
