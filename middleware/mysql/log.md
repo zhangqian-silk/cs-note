@@ -27,19 +27,24 @@ Undo Log 是 InnoDB 存储引擎的核心日志之一，主要用于事务回滚
   - 回滚时按照主键进行删除
   - 日志存储在临时回滚段中，不参与 MVCC，事务提交后即可删除，生命周期较短
 
-- **delete**
-  - 存储删除的记录的完整内容，回滚指针指向历史 Undo Log
-  - 回滚时重新插入
-  - 日志存储在持久回滚段中，参与 MVCC，需要等所有依赖其的事务提交后，才能删除
-
 - **update**
   - 存储被更新列的旧值，回滚指针指向历史 Undo Log
   - 回滚时更新为存储的旧值
   - 日志存储在持久回滚段中，参与 MVCC，需要等所有依赖其的事务提交后，才能删除
 
+- **delete**
+  - del 操作实质是修改隐藏字段中的 `delete_mask` 标记，所以也会被转化为 update 操作
+  - 如果该字段重新插入，相对应的，也是重新修改  `delete_mask` 标记
+  - del 对应的 Undo Log 与 Update 操作基本相同
+  - 等待相关事务都结束后，会有后台线程根据  `delete_mask` 标记，去真正执行删除操作
+
 - **版本链**
   - 针对于 MySQL（Innodb）的一条记录，系统列中的有两个特殊列，分别为事务 ID `trx_id` 和回滚指针 `roll_pointer`（与 Undo Log 中的两列一致）
   - 通过行记录中回滚指针与 Undo Log 的回滚指针，将与该行相关联的 Undo Log 全部串联起来，形成版本链
+
+以下是一个 update 操作的 Undo Log 示例：
+
+![](images/2025-03-16-13-01-03.png)
 
 **生命周期**
 
@@ -299,3 +304,4 @@ MySQL 主从复制（Replication）核心是基于二进制日志（Binary Log, 
 
 - [MySQL 日志：undo log、redo log、binlog 有什么用？](https://xiaolincoding.com/mysql/log/how_update.html)
 - [02 日志系统：一条SQL更新语句是如何执行的？](https://jums.gitbook.io/mysql-shi-zhan-45-jiang/02-ri-zhi-xi-tong-yi-tiao-sql-geng-xin-yu-ju-shi-ru-he-zhi-hang-de)
+- <https://catkang.github.io/2021/10/30/mysql-undo.html>
