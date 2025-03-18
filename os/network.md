@@ -164,7 +164,7 @@ while(1) {
 
 在单线程的基础上，实现了并发能力，但是并发能力优先，无法利用 CPU 多核特性，且轮询会持续占用 CPU，可能会导致利用率过低。
 
-### Select()
+### select 方案
 
 通过 `fd_set` 位掩码结构管理文件描述符集合，将所有已连接的 Socket 放在该集合中，调用 `select()` 函数监听将该集合**拷贝**至内核中，内核会**遍历**该集合，当检查到有事件变化时，将该 Socket 标记为可读或可写，在将该集合**拷贝**至用户态中。最后在用户态，通过**遍历**的方式找到有标记的 Socket，然后对其进行处理。
 
@@ -179,6 +179,50 @@ if (FD_ISSET(sockfd, &read_fds)) {
     // 处理就绪的 sockfd
 }
 ```
+
+### poll 方案
+
+使用 `pollfd` 结构数组替代 `fd_set`，以链表的方式来存储已连接的 Socket，通过 `poll()` 函数监听描述符状态，整体逻辑与 `select()` 函数一致，仍需要两次**拷贝**操作与两次**遍历**操作
+
+```c
+struct pollfd fds[MAX_FDS];
+fds[0].fd = sockfd;
+fds[0].events = POLLIN;
+poll(fds, 1, -1); // 阻塞等待
+if (fds[0].revents & POLLIN) {
+    // 处理就绪的 sockfd
+}
+```
+
+### epoll 方案
+
+通过 `epoll_create()` 函数创建事件表，使用 `epoll_ctl()` 注册 / 修改事件，使用 `epoll_wait()` 函数等待就绪事件。
+
+```c
+int epfd = epoll_create(0);
+struct epoll_event ev, events[MAX_EVENTS];
+ev.events = EPOLLIN | EPOLLET; // ET 模式
+ev.data.fd = sockfd;
+epoll_ctl(epfd, EPOLL_CTL_ADD, sockfd, &ev);
+int n = epoll_wait(epfd, events, MAX_EVENTS, -1);
+for (int i = 0; i < n; i++) {
+    if (events[i].data.fd == sockfd) {
+        // 处理就绪的 sockfd
+    }
+}
+```
+
+在 epoll 内部，主要做了两方面的优化，大幅提升性能，即使监听的 Socket 数量极多时，效率也不太有太大的下降，能够轻松解决 C10K 问题。
+
+**红黑树**
+
+在内核中，epoll 通过红黑树来管理所有注册的文件描述字（已连接的 Socket），区别于 select/poll 每次都需要传入整个 Socket 集合，epoll 仅在注册 / 修改时传入单个 Socket，大幅简化数据拷贝与内存分配的成本。
+
+**事件驱动**
+
+内核中额外维护了一个链表来记录所有就绪事件，当 Socket 状态发生改变时（可读 / 可写），通过回调函数，内核会将其加入就绪事件列表，当调用 `epoll_wait()` 时，直接返回该链表。
+
+![](images/2025-03-18-13-48-08.png)
 
 ## Ref
 
