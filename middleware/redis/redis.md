@@ -59,14 +59,6 @@ Redis 是一个基于内存的 KV 数据库，提供了极高的读写性能和�
     </tr>
 </table>
 
-## 线程模型
-
-![redis_thread_model](images/redis_thread_model.png)
-
-Redis 主要采用单线程模型，在主线程中完成网络 I/O、命令处理、数据读写等操作，在后台线程执行非阻塞命令或 AOF、RDB、数据清理等耗时任务。
-
-在 6.0 版本中，支持了多线程处理网络 I/O，提高序列化等操作性能，但是对于命令执行等任务，仍在主线程中进行。
-
 ## High Availability
 
 - 持久化
@@ -91,6 +83,8 @@ Redis 主要采用单线程模型，在主线程中完成网络 I/O、命令处�
   - 引入多线程处理网络 I/O 和序列化，提高并发能力
 - 批处理
   - 命令支持批处理，减少网络 I/O 次数
+- 数据结构
+  - 针对不同场景，选择不同的底层结构，从而优化读写性能
 
 ## High Concurrency
 
@@ -108,7 +102,12 @@ Redis 主要采用单线程模型，在主线程中完成网络 I/O、命令处�
    - 影响 AOF 的 fsync 过程，在 Always 策略下，可能会阻塞主线程
    - 影响 AOF 重写和 RDB 构建过程，两者都会通过子进程进行处理，如果触发大 Key 的写时复制策略，可能会阻塞主线程
 
+2. Why is Redis so fast?
+
+  ![](images/2025-03-18-22-27-46.png)
+
 ## Ref
 
 - <https://xiaolincoding.com/redis/module/strategy.html>
 - <https://xiaolincoding.com/redis/base/redis_interview.html>
+- <https://blog.bytebytego.com/p/why-is-redis-so-fast>
