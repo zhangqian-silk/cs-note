@@ -10,7 +10,7 @@ Redis 主要采用单线程模型，在主线程中完成网络 I/O、命令处�
 
 ![](images/2025-03-18-23-22-18.png)
 
-## 初始化
+## Server 初始化
 
 在启动程序时，即 [`main()`](https://github.com/redis/redis/blob/7.0.0/src/server.c#L6832) 函数中，会调用 [`initServer()`](https://github.com/redis/redis/blob/7.0.0/src/server.c#L2374) 函数来初始化服务器相关配置，其中包括对于 epoll 的初始化逻辑，随后调用 [`aeMain()`](https://github.com/redis/redis/blob/7.0.0/src/ae.c#L493) 函数，循环执行事件处理，包括调用 `epoll_wail()` 函数处理新连接请求。
 
@@ -298,6 +298,146 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
     }
 
     return numevents;
+}
+```
+
+## 客户端连接
+
+当客户端发起连接时，会触发上文所注册的读回调函数 [`acceptTcpHandler()`](https://github.com/redis/redis/blob/7.0.0/src/networking.c#L1331)，函数主要逻辑如下所示：
+
+- 调用 [`anetTcpAccept()`](https://github.com/redis/redis/blob/7.0.0/src/anet.c#L534) 函数获取新的 Socket 连接（内部调用 `accept()` 函数）
+- 调用 [`connCreateAcceptedSocket()`](https://github.com/redis/redis/blob/7.0.0/src/connection.c#L95) 函数创建 [`connection`](https://github.com/redis/redis/blob/7.0.0/src/connection.h#L77) 对象
+- 调用 [`acceptCommonHandler()`](https://github.com/redis/redis/blob/7.0.0/src/networking.c#L1259) 函数，并最终调用 [`createClient()`](https://github.com/redis/redis/blob/7.0.0/src/networking.c#L120) 函数，为新连接创建 [`client`](https://github.com/redis/redis/blob/7.0.0/src/server.h#L1078) 对象
+
+```c
+void acceptTcpHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
+    ...
+    while(max--) {
+        cfd = anetTcpAccept(server.neterr, fd, cip, sizeof(cip), &cport);
+        if (cfd == ANET_ERR) {
+            if (errno != EWOULDBLOCK)
+                serverLog(LL_WARNING,
+                    "Accepting client connection: %s", server.neterr);
+            return;
+        }
+        serverLog(LL_VERBOSE,"Accepted %s:%d", cip, cport);
+        acceptCommonHandler(connCreateAcceptedSocket(cfd),0,cip);
+    }
+}
+
+connection *connCreateAcceptedSocket(int fd) {
+    connection *conn = connCreateSocket();
+    conn->fd = fd;
+    conn->state = CONN_STATE_ACCEPTING;
+    return conn;
+}
+
+static void acceptCommonHandler(connection *conn, int flags, char *ip) {
+    client *c;
+    ...
+    /* Create connection and client */
+    if ((c = createClient(conn)) == NULL) {
+        ...
+    }
+    ...
+}
+```
+
+### anetTcpAccept()
+
+[`anetTcpAccept()`](https://github.com/redis/redis/blob/7.0.0/src/anet.c#L534) 函数内部会调用 [`anetGenericAccept()`](https://github.com/redis/redis/blob/7.0.0/src/anet.c#L503) 函数来接受新的连接，函数内部会确保该操作是非阻塞的。
+
+针对支持 `accept4()` 的场景，会优先使用 `accept4()` 函数进行处理，保障标志位的原子操作，不支持的情况下，使用 `accept()` 函数接受新连接，并手动设置非阻塞标志位。
+
+```c
+int anetTcpAccept(char *err, int serversock, char *ip, size_t ip_len, int *port) {
+    ...
+    if ((fd = anetGenericAccept(err,serversock,(struct sockaddr*)&sa,&salen)) == ANET_ERR)
+        return ANET_ERR;
+    ...
+    return fd;
+}
+
+static int anetGenericAccept(char *err, int s, struct sockaddr *sa, socklen_t *len) {
+    int fd;
+    do {
+        /* Use the accept4() call on linux to simultaneously accept and
+         * set a socket as non-blocking. */
+#ifdef HAVE_ACCEPT4
+        fd = accept4(s, sa, len,  SOCK_NONBLOCK | SOCK_CLOEXEC);
+#else
+        fd = accept(s,sa,len);
+#endif
+    } while(fd == -1 && errno == EINTR);
+    if (fd == -1) {
+        anetSetError(err, "accept: %s", strerror(errno));
+        return ANET_ERR;
+    }
+#ifndef HAVE_ACCEPT4
+    if (anetCloexec(fd) == -1) {
+        anetSetError(err, "anetCloexec: %s", strerror(errno));
+        close(fd);
+        return ANET_ERR;
+    }
+    if (anetNonBlock(err, fd) != ANET_OK) {
+        close(fd);
+        return ANET_ERR;
+    }
+#endif
+    return fd;
+}
+```
+
+### createClient()
+
+[`createClient()`](https://github.com/redis/redis/blob/7.0.0/src/networking.c#L120) 函数中，会额外将连接的写回调设置为 [`readQueryFromClient()`](https://github.com/redis/redis/blob/7.0.0/src/networking.c#L2584) 函数，并将该 [`client`](https://github.com/redis/redis/blob/7.0.0/src/server.h#L1078) 对象实例设置为连接的数据对象。
+
+```c
+client *createClient(connection *conn) {
+    client *c = zmalloc(sizeof(client));
+    if (conn) {
+        connEnableTcpNoDelay(conn);
+        if (server.tcpkeepalive)
+            connKeepAlive(conn,server.tcpkeepalive);
+        connSetReadHandler(conn, readQueryFromClient);
+        connSetPrivateData(conn, c);
+    }
+    ...
+}
+```
+
+在 [`readQueryFromClient()`](https://github.com/redis/redis/blob/7.0.0/src/networking.c#L2584) 函数中，会通过 [`connGetPrivateData()`](https://github.com/redis/redis/blob/7.0.0/src/connection.c#L137) 函数拿到最终的客户端实例，然后调用 [`processInputBuffer()`](https://github.com/redis/redis/blob/7.0.0/src/networking.c#L2488) 函数、[`processCommandAndResetClient()`](https://github.com/redis/redis/blob/7.0.0/src/networking.c#L2434) 函数直至最终的 [`processCommand()`](https://github.com/redis/redis/blob/7.0.0/src/server.c#L3565) 函数，解析命令并进行处理。
+
+```c
+void readQueryFromClient(connection *conn) {
+    client *c = connGetPrivateData(conn);
+    ...
+    if (processInputBuffer(c) == C_ERR)
+        c = NULL;
+    ...
+}
+
+int processInputBuffer(client *c) {
+    while(c->qb_pos < sdslen(c->querybuf)) {
+        ...
+        if (c->argc == 0) {
+            resetClient(c);
+        } else {
+            ...
+            if (processCommandAndResetClient(c) == C_ERR) {
+                return C_ERR;
+            }
+        }
+    }
+    ...
+}
+
+int processCommandAndResetClient(client *c) {
+    ...
+    if (processCommand(c) == C_OK) {
+        ...
+    }
+    ...
 }
 ```
 
