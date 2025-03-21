@@ -220,7 +220,7 @@
 
 Kafka 整体架构如下所示
 
-![](https://substackcdn.com/image/fetch/w_1456,c_limit,f_webp,q_auto:good,fl_progressive:steep/https%3A%2F%2Fsubstack-post-media.s3.amazonaws.com%2Fpublic%2Fimages%2Fdd3690db-87b8-4165-8798-37d1d083f837_1600x1527.png)
+![](images/2025-03-21-13-42-31.png)
 
 **Control Plane**
 
@@ -317,7 +317,7 @@ Kafka 整体架构如下所示
 
 RocketMQ 整体架构如下所示
 
-![](https://www.itmuch.com/books/rocketmq/image/rocketmq_architecture_1.png)
+![](images/2025-03-21-13-42-16.png)
 
 **NameServer**
 
