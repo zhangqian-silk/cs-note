@@ -145,22 +145,53 @@ SSO 的核心是集中式身份认证，用户只需在认证中心验证一次�
 
 ### SAML
 
-## OAuth
+## OIDC
 
+**OIDC（OpenID Connect）** 是基于 OAuth 2.0 协议构建的身份认证协议，它通过标准化方式扩展 OAuth 2.0，通过 **ID Token** 传递用户信息，使其不仅能处理授权，还能验证用户身份。
 
+**核心概念**
 
+- **End-User(EU)**：用户（OAuth 2.0 中的 Resource Owner）
+- **ID Token**：JWT 格式，包含用户身份信息（如用户 ID、昵称、邮箱等）
+- **OpenID Provider (OP)**: 提供身份认证的服务方（OAuth 2.0 中的 Authorization Server）
+- **Relying Party (RP)**：受信任的第三方应用(OAuth 2.0 中的 Client)
+- **UserInfo Endpoint**：RP 可通过 `Access Token` 访问该接口，获取更详细的用户信息（如头像等）
 
+**协议簇**
+
+- **Core**：必须项，定义 OIDC 的核心功能
+- **Discovery**：定义客户端如何发现 OP 信息
+- **Dynamic Client Registration**：定义客户端如何动态注册 OP
+
+![](images/2025-03-26-23-46-34.png)
+
+**核心流程**
+
+相比与 OAuth，OIDC 的核心点在于支持用户认证：
+
+- 除了 Access Token 外，同步返回 ID Token，包含部分用户信息
+- 标准化用户信息接口为 `UserInfo`
+
+![](images/2025-03-26-23-50-41.png)
 
 ## MFA
 
-1. **联合认证协议**  
-   - **OAuth 2.0**：主要用于**授权**第三方应用访问资源，但常被用于联合登录（如“使用Google账号登录”）。实际认证由第三方完成。
-   - **OpenID Connect (OIDC)**：基于OAuth 2.0的认证协议，提供标准化的用户身份信息（ID Token）。
-   - **SAML**：XML-based协议，常见于企业单点登录（SSO）。
+MFA（（Multi-Factor Authentication））是一种安全验证机制，要求用户提供两个或多个独立的身份验证因素才能访问系统、账户或数据。其核心目的是通过多层验证降低账户被盗风险。
 
-2. **多因素认证（MFA）**  
-   - 结合密码（所知）、手机/硬件密钥（所有）、生物特征（所是）等多种方式增强安全性。
+**认证因素**
 
+- **知识因素（Something You Know）**：如密码、PIN 码、安全问题的答案
+
+- **持有因素（Something You Have）**：如手机（接收短信验证码）、硬件令牌、智能卡、认证应用程序（Google Authenticator）
+
+- **固有因素（Something You Are）**：如指纹、面部识别、虹膜扫描、声纹等生物特征
+
+**常见实现方式**
+
+- 短信/邮件验证码（易受 SIM 卡劫持攻击，安全性较低）
+- 认证应用程序（如 Google Authenticator、Microsoft Authenticator）
+- 硬件令牌（如 YubiKey，物理设备生成一次性密码）
+- 生物识别（如 iPhone 的 Face ID、Windows Hello）
 
 ## Ref
 
@@ -168,3 +199,5 @@ SSO 的核心是集中式身份认证，用户只需在认证中心验证一次�
 - <https://javaguide.cn/system-design/security/design-of-authority-system.html>
 - <https://javaguide.cn/system-design/security/jwt-intro.html>
 - <https://mp.weixin.qq.com/s/ul0AHZ0zP5BxKTJFtxDeIQ?token=724645736&lang=zh_CN>
+- <https://www.cnblogs.com/CKExp/p/16084545.html>
+- <https://www.cnblogs.com/Zhang-Xiang/p/14733907.html>
