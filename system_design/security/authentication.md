@@ -145,6 +145,31 @@ SSO 的核心是集中式身份认证，用户只需在认证中心验证一次�
 
 ### SAML
 
+SAML（Security Assertion Markup Language）是一种基于 XML 的标准协议，用于在不同系统之间安全地交换用户身份认证和授权信息，主要用于实现单点登录（SSO）。
+
+**协议主体**
+
+- **浏览器**：SP 和 IdP 借助浏览器互相通信
+- **SP**：资源提供方
+- **IdP**：身份认证提供方
+
+**登录流程**
+
+![](images/2025-03-27-13-47-31.png)
+
+**优势**
+
+- 标准化：跨平台兼容，支持企业级应用集成
+- 安全性：依赖数字签名和加密，防止篡改和窃听
+- 跨域支持：适用于不同组织的联合身份（如合作伙伴系统）
+- 用户体验：单点登录减少重复登录，提升效率
+
+**局限性**
+
+- 复杂性：XML 解析和配置较为繁琐，需处理证书、时钟同步等问题
+- 性能开销：XML 体积较大，可能影响传输效率（尤其在移动端）
+- 依赖浏览器：大多数实现依赖浏览器重定向，不适合非 Web 场景
+
 ## OIDC
 
 **OIDC（OpenID Connect）** 是基于 OAuth 2.0 协议构建的身份认证协议，它通过标准化方式扩展 OAuth 2.0，通过 **ID Token** 传递用户信息，使其不仅能处理授权，还能验证用户身份。
@@ -201,3 +226,4 @@ MFA（（Multi-Factor Authentication））是一种安全验证机制，要求�
 - <https://mp.weixin.qq.com/s/ul0AHZ0zP5BxKTJFtxDeIQ?token=724645736&lang=zh_CN>
 - <https://www.cnblogs.com/CKExp/p/16084545.html>
 - <https://www.cnblogs.com/Zhang-Xiang/p/14733907.html>
+- <https://docs.authing.cn/v2/concepts/saml/saml-flow.html>
