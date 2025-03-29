@@ -131,3 +131,4 @@
 ## Ref
 
 - <https://github.com/ByteByteGoHq/system-design-101?tab=readme-ov-file#tcpip-encapsulation>
+- <https://xiaolincoding.com/network/1_base/what_happen_url.html>
