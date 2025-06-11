@@ -1003,43 +1003,52 @@ func SafeClose(ch chan T) (justClosed bool) {
 }
 ```
 
-### 使用锁的方案
+### 保障原子操作
 
-之所以不能提供判断 channel 是否关闭的方案，主要是因为判断函数和实际的操作函数，并非是原子操作，所以判断函数的结果不能完全作为操作的依据，此时可以额外引用锁来保障操作的原子性。
+之所以不能提供判断 channel 是否关闭的方案，主要是因为判断函数和实际的操作函数，并非是原子操作，所以判断函数的结果不能完全作为操作的依据。此时可引入 cas 等方案，保障操作的原子性。
 
 ```go
-type MyChannel struct {
-    C      chan T
-    closed bool
-    mutex  sync.Mutex
+type SafeChan[T any] struct {
+    ch          chan T
+    closedState int32
 }
 
-func NewMyChannel() *MyChannel {
-    return &MyChannel{C: make(chan T)}
+func NewSafeChan[T any]() *SafeChan[T] {
+    return &SafeChan[T]{ch: make(chan T)}
 }
 
-func (mc *MyChannel) SafeSend(value T) {
-    mc.mutex.Lock()
-    if !mc.closed {
-        me.C <- value
+func (sc *SafeChan[T]) Input(value T) (sent bool) {
+    if sc.IsClosed() {
+        return false
     }
-    mc.mutex.Unlock()
+
+    defer func() {
+        if r := recover(); r != nil {
+            sent = false
+        }
+    }()
+
+    sc.ch <- value
+    return true
 }
 
-func (mc *MyChannel) SafeClose() {
-    mc.mutex.Lock()
-    if !mc.closed {
-        close(mc.C)
-        mc.closed = true
+func (sc *SafeChan[T]) Output() <-chan T {
+    return sc.ch
+}
+
+func (sc *SafeChan[T]) Close() {
+    if sc == nil || sc.ch == nil {
+        return
     }
-    mc.mutex.Unlock()
+    if atomic.CompareAndSwapInt32(&sc.closedState, 0, 1) {
+        close(sc.ch)
+    }
 }
 
-func (mc *MyChannel) IsClosed() bool {
-    mc.mutex.Lock()
-    defer mc.mutex.Unlock()
-    return mc.closed
+func (sc *SafeChan[T]) IsClosed() bool {
+    return atomic.LoadInt32(&sc.closedState) == 1
 }
+
 ```
 
 ## Ref
