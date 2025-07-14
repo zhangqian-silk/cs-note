@@ -80,13 +80,13 @@ type Task struct {
 
 **功能方法**
 
-- `calculateNextExecTime` 计算下次运行时间，支持特殊配置，如仅在工作日运行
+- `calculateExecTime` 计算下次运行时间，支持特殊配置，如仅在工作日运行
 
 ```go
-// calculateNextExecTime 计算并更新任务的下次运行时间
-func (t *Task) calculateNextExecTime(fromTime time.Time) (time.Time, error) {
+// calculateExecTime 计算并更新任务的下次运行时间
+func (t *Task) calculateExecTime(fromTime time.Time) (time.Time, error) {
     ...
-    for {
+    for range 100 {
         ...
         if t.Options.OnlyWorkday {
             if !IsWorkday(next) {
@@ -242,17 +242,17 @@ func (s *Scheduler) scanAndRunTasks(currentTime time.Time) {
     for _, task := range taskToScan {
         execTime, err := s.redisHelper.GetTime(task.execTimeKey())
         if err != nil {
-            fmt.Printf("Get next exec time for task '%s' failed. Err info: %v\n", task.Name, err)
+            ...
             continue
         }
 
         if execTime.IsZero() {
-            fmt.Printf("Get next exec time for task '%s' failed. Err info: next exec time is zero\n", task.Name)
+            ...
             continue
         }
 
         if currentTime.After(execTime) {
-            fmt.Printf("Task '%s' is due, execTime: %s\n", task.Name, execTime.Format(time.DateTime))
+            ...
             go s.executeTask(task, execTime)
         }
     }
@@ -295,7 +295,7 @@ func (s *Scheduler) executeTask(t *Task, execTime time.Time) {
 func (s *Scheduler) executeTask(t *Task, execTime time.Time) {
     ...
     // 并发保障，通过 cas 更新下次执行时间，如果更新失败，说明任务已经被其他实例执行过
-    execTime, err := t.calculateNextExecTime(execTime)
+    execTime, err := t.calculateExecTime(execTime)
     if err != nil {
         fmt.Printf("Calculate next exec time for task '%s' failed. Err info: %v\n", t.Name, err)
         return
@@ -576,29 +576,24 @@ func NewTask(name, cronSpec string, job JobFunc, opts TaskOptions) (*Task, error
 
 func (t *Task) calculateExecTime(fromTime time.Time) (time.Time, error) {
     execTime := t.parsedCron.Next(fromTime)
+    if execTime.IsZero() {
+        return time.Time{}, fmt.Errorf("calculate exec time failed")
+    }
 
     // 应用额外调度选项
-    var iterations int
     var flag bool
-    for {
-        iterations++
-        flag = true
+    for range 100 {
+        flag = false
 
         if t.Options.OnlyWorkday {
             if !IsWorkday(execTime) {
                 execTime = t.parsedCron.Next(execTime)
-                flag = false
+                flag = true
             }
         }
 
-        if flag {
-            // 正常结束
-            break
-        }
-
-        // 异常情况处理，防止无限循环
-        if exec.IsZero() || iterations > 100 {
-            exec = time.Time{}
+        // 异常情况处理，或没有额外改动，直接结束
+        if execTime.IsZero() || !flag {
             break
         }
     }
@@ -736,7 +731,18 @@ func (s *Scheduler) initTaskExecTime(task *Task) error {
         return err
     }
 
-    err = s.redisHelper.SetTimeNX(task.execTimeKey(), execTime, time.Until(execTime)*2)
+    next, err := s.redisHelper.GetTime(task.execTimeKey())
+    if err != nil {
+        fmt.Printf("Get exec time for task '%s' failed. Err info: %v\n", task.Name, err)
+        return err
+    }
+
+    if !next.IsZero() && execTime.Equal(next) {
+        fmt.Printf("Task '%s' already initialized. Next exec time: %s\n", task.Name, next.Format(time.DateTime))
+        return nil
+    }
+
+    err = s.redisHelper.SetTime(task.execTimeKey(), execTime, time.Until(execTime)*2)
     if err != nil {
         fmt.Printf("Update exec time for task '%s' failed. Err info: %v\n", task.Name, err)
         return err
@@ -817,9 +823,6 @@ func (s *Scheduler) scanAndRunTasks(currentTime time.Time) {
 
     for _, task := range taskToScan {
         execTime, err := s.redisHelper.GetTime(task.execTimeKey())
-        if err == nil && execTime.IsZero() {
-            err = fmt.Errorf("exec time is zero")
-        }
         if err != nil {
             s.failedCounter[task.Name]++
             fmt.Printf("Get exec time for task '%s' failed. Failed time:%d. Err info: %v\n", task.Name, s.failedCounter[task.Name], err)
@@ -827,13 +830,23 @@ func (s *Scheduler) scanAndRunTasks(currentTime time.Time) {
             if s.failedCounter[task.Name] >= 3 {
                 err = s.initTaskExecTime(task)
                 if err != nil {
-                    fmt.Printf("Init exec time for task '%s' failed. Err info: %v\n", task.Name, err)
+                    fmt.Printf("Reset exec time for task '%s' failed. Err info: %v\n", task.Name, err)
                 }
             }
             continue
         }
 
+        if execTime.IsZero() {
+            fmt.Printf("Task '%s' exec time is zero. Initializing...\n", task.Name)
+            err = s.initTaskExecTime(task)
+            if err != nil {
+                fmt.Printf("Reset exec time for task '%s' failed. Err info: %v\n", task.Name, err)
+            }
+            continue
+        }
+
         if currentTime.After(execTime) {
+            s.failedCounter[task.Name] = 0
             fmt.Printf("Task '%s' is due, exec time: %s\n", task.Name, execTime.Format(time.DateTime))
             go s.executeTask(task, execTime)
         }
