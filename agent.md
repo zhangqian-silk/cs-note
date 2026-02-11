@@ -2,10 +2,15 @@
 
 ## Rules
 
+- 缩进使用制表符进行缩进
+
 ### Markdown
 
 - 无序列表使用 `-` 而不是 `*`
-- MD022/blanks-around-headings: Headings should be surrounded by blank lines[Expected: 1; Below]
-- MD032/blanks-around-lists: Lists should be surrounded by blank
-- MD030/list-marker-space: Spaces after list markers [Expected: 1]
-- MD060/table-column-style: Table column style [Table pipe has extra space to the left for style "compact"]
+- 标题和其他元素间保持空行
+- 语言风格偏向专业、学术的风格
+
+### Code
+
+- 伪代码使用 CLRS 风格
+- 代码实现默认使用 Golang
