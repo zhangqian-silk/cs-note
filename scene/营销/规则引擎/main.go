@@ -10,7 +10,7 @@ func main() {
 	RegisterDefaultRules(cache)
 
 	engine := NewEngine(cache.GetAll())
-	fact := Fact{
+	fact := NewFact(map[string]interface{}{
 		"user": map[string]interface{}{
 			"register_days": 5,
 			"city":          "北京",
@@ -20,7 +20,7 @@ func main() {
 			"total_amount": 320,
 			"threshold":    150,
 		},
-	}
+	})
 
 	results, err := engine.Evaluate(fact)
 	if err != nil {

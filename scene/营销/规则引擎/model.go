@@ -1,8 +1,75 @@
 package main
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
-type Fact map[string]interface{}
+type Fact struct {
+	data    map[string]interface{}
+	loaders map[string]func() (interface{}, error)
+	loaded  map[string]bool
+}
+
+func NewFact(data map[string]interface{}) *Fact {
+	if data == nil {
+		data = map[string]interface{}{}
+	}
+	return &Fact{
+		data:    data,
+		loaders: map[string]func() (interface{}, error){},
+		loaded:  map[string]bool{},
+	}
+}
+
+func (f *Fact) SetLoader(path string, loader func() (interface{}, error)) {
+	f.loaders[path] = loader
+}
+
+func (f *Fact) GetPath(path string) (interface{}, bool, error) {
+	parts := strings.Split(path, ".")
+	var current interface{} = f.data
+	for i, part := range parts {
+		m, ok := current.(map[string]interface{})
+		if !ok {
+			return nil, false, nil
+		}
+		if val, ok := m[part]; ok {
+			current = val
+			continue
+		}
+		keyPath := strings.Join(parts[:i+1], ".")
+		loaded, err := f.loadInto(keyPath, m, part)
+		if err != nil {
+			return nil, false, err
+		}
+		if loaded {
+			if val, ok := m[part]; ok {
+				current = val
+				continue
+			}
+		}
+		return nil, false, nil
+	}
+	return current, true, nil
+}
+
+func (f *Fact) loadInto(keyPath string, parent map[string]interface{}, key string) (bool, error) {
+	loader, ok := f.loaders[keyPath]
+	if !ok {
+		return false, nil
+	}
+	if f.loaded[keyPath] {
+		return true, nil
+	}
+	val, err := loader()
+	if err != nil {
+		return false, err
+	}
+	parent[key] = val
+	f.loaded[keyPath] = true
+	return true, nil
+}
 
 type Rule struct {
 	RuleID      string     `json:"rule_id"`
