@@ -26,6 +26,14 @@ func (f *Fact) SetLoader(path string, loader func() (interface{}, error)) {
 	f.loaders[path] = loader
 }
 
+func (f *Fact) Clone() *Fact {
+	cloned := NewFact(deepCopyMap(f.data))
+	for k, v := range f.loaders {
+		cloned.loaders[k] = v
+	}
+	return cloned
+}
+
 func (f *Fact) GetPath(path string) (interface{}, bool, error) {
 	parts := strings.Split(path, ".")
 	var current interface{} = f.data
@@ -71,10 +79,44 @@ func (f *Fact) loadInto(keyPath string, parent map[string]interface{}, key strin
 	return true, nil
 }
 
+func deepCopyMap(src map[string]interface{}) map[string]interface{} {
+	if src == nil {
+		return map[string]interface{}{}
+	}
+	dst := make(map[string]interface{}, len(src))
+	for k, v := range src {
+		dst[k] = deepCopyValue(v)
+	}
+	return dst
+}
+
+func deepCopySlice(src []interface{}) []interface{} {
+	if src == nil {
+		return nil
+	}
+	dst := make([]interface{}, len(src))
+	for i, v := range src {
+		dst[i] = deepCopyValue(v)
+	}
+	return dst
+}
+
+func deepCopyValue(v interface{}) interface{} {
+	switch t := v.(type) {
+	case map[string]interface{}:
+		return deepCopyMap(t)
+	case []interface{}:
+		return deepCopySlice(t)
+	default:
+		return v
+	}
+}
+
 type Rule struct {
 	RuleID      string     `json:"rule_id"`
 	RuleName    string     `json:"rule_name"`
 	Description string     `json:"description"`
+	Type        string     `json:"type"`
 	Priority    int        `json:"priority"`
 	MutexGroup  string     `json:"mutex_group"`
 	Status      string     `json:"status"`

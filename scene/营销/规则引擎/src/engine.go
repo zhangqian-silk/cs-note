@@ -3,9 +3,11 @@ package main
 import (
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 )
 
 type Engine struct {
@@ -42,11 +44,58 @@ func NewEngine(rules []Rule) *Engine {
 }
 
 func (e *Engine) Evaluate(fact *Fact) ([]Result, error) {
+	return e.evaluateRules(e.rules, fact)
+}
+
+func (e *Engine) EvaluateParallel(fact *Fact, groupKey func(Rule) string) ([]Result, error) {
+	if groupKey == nil {
+		groupKey = func(rule Rule) string {
+			if rule.Type == "" {
+				return "default"
+			}
+			return rule.Type
+		}
+	}
+	groups := map[string][]compiledRule{}
+	for _, rule := range e.rules {
+		key := groupKey(rule.meta)
+		groups[key] = append(groups[key], rule)
+	}
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		results  []Result
+		firstErr error
+	)
+	for _, rules := range groups {
+		groupRules := rules
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			groupFact := fact.Clone()
+			groupResults, err := e.evaluateRules(groupRules, groupFact)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil && firstErr == nil {
+				firstErr = err
+				return
+			}
+			results = append(results, groupResults...)
+		}()
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	return results, nil
+}
+
+func (e *Engine) evaluateRules(rules []compiledRule, fact *Fact) ([]Result, error) {
 	// 逐条执行规则并汇总命中结果
 	var results []Result
 	// 互斥组命中记录：同一组只能命中一次
 	mutexHit := map[string]bool{}
-	for _, rule := range e.rules {
+	for _, rule := range rules {
 		// 非激活规则直接跳过
 		if rule.meta.Status != "" && strings.ToLower(rule.meta.Status) != "active" {
 			continue
@@ -234,6 +283,8 @@ func compileLeaf(condition *Condition) (func(*Fact) (bool, error), error) {
 			return isIn(left, right)
 		case "contains":
 			return contains(left, right)
+		case "bitmask_all":
+			return bitmaskAll(left, right)
 		default:
 			return false, fmt.Errorf("unsupported operator: %s", operator)
 		}
@@ -273,6 +324,8 @@ func evaluateLeaf(condition *Condition, fact *Fact) (bool, error) {
 		return isIn(left, right)
 	case "contains":
 		return contains(left, right)
+	case "bitmask_all":
+		return bitmaskAll(left, right)
 	default:
 		return false, fmt.Errorf("unsupported operator: %s", condition.Operator)
 	}
@@ -343,6 +396,67 @@ type jsonNumber interface {
 	Float64() (float64, error)
 }
 
+func toUint64(v interface{}) (uint64, bool) {
+	switch t := v.(type) {
+	case int:
+		if t < 0 {
+			return 0, false
+		}
+		return uint64(t), true
+	case int8:
+		if t < 0 {
+			return 0, false
+		}
+		return uint64(t), true
+	case int16:
+		if t < 0 {
+			return 0, false
+		}
+		return uint64(t), true
+	case int32:
+		if t < 0 {
+			return 0, false
+		}
+		return uint64(t), true
+	case int64:
+		if t < 0 {
+			return 0, false
+		}
+		return uint64(t), true
+	case uint:
+		return uint64(t), true
+	case uint8:
+		return uint64(t), true
+	case uint16:
+		return uint64(t), true
+	case uint32:
+		return uint64(t), true
+	case uint64:
+		return t, true
+	case float64:
+		if t < 0 || math.Trunc(t) != t {
+			return 0, false
+		}
+		return uint64(t), true
+	case float32:
+		if t < 0 || math.Trunc(float64(t)) != float64(t) {
+			return 0, false
+		}
+		return uint64(t), true
+	case jsonNumber:
+		f, err := t.Float64()
+		if err != nil {
+			return 0, false
+		}
+		if f < 0 || math.Trunc(f) != f {
+			return 0, false
+		}
+		return uint64(f), true
+	default:
+		return 0, false
+	}
+}
+
 func isEqual(left, right interface{}) bool {
 	// 先归一化数值，再进行深度比较
 	return reflect.DeepEqual(normalizeNumber(left), normalizeNumber(right))
@@ -354,6 +468,18 @@ func normalizeNumber(v interface{}) interface{} {
 		return f
 	}
 	return v
+}
+
+func bitmaskAll(left, right interface{}) (bool, error) {
+	lv, ok := toUint64(left)
+	if !ok {
+		return false, errors.New("left is not integer for bitmask_all")
+	}
+	rv, ok := toUint64(right)
+	if !ok {
+		return false, errors.New("right is not integer for bitmask_all")
+	}
+	return (lv & rv) == rv, nil
 }
 
 func isIn(left, right interface{}) (bool, error) {
