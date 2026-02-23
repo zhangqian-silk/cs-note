@@ -3,8 +3,8 @@ package main
 var DefaultRules = []Rule{
 	{
 		RuleID:      "RULE_1024",
-		RuleName:    "双11新人满减_高活用户专享",
-		Description: "针对北京/上海的高价值新人，满300减50",
+		RuleName:    "新人满减券",
+		Description: "新人满300减50",
 		Type:        RuleTypeTargeting,
 		Priority:    100,
 		MutexGroup:  RuleMutexNewUserPromo,
@@ -13,13 +13,7 @@ var DefaultRules = []Rule{
 			Operator: ConditionAnd,
 			Children: []Condition{
 				{Field: "user.register_days", Operator: ConditionLte, Value: 7},
-				{
-					Operator: ConditionOr,
-					Children: []Condition{
-						{Field: "user.city", Operator: ConditionIn, Value: []interface{}{UserCityBeijing, UserCityShanghai}},
-						{Field: "user.tags", Operator: ConditionContains, Value: UserTagHighValue},
-					},
-				},
+				{Field: "user.register_days", Operator: ConditionLte, Value: 7},
 				{Field: "cart.total_amount", Operator: ConditionGte, Value: 300},
 			},
 		},
@@ -29,8 +23,8 @@ var DefaultRules = []Rule{
 	},
 	{
 		RuleID:      "RULE_2048",
-		RuleName:    "高活用户免邮",
-		Description: "高活用户满120免邮",
+		RuleName:    "新人折扣券",
+		Description: "新人满120享9折券",
 		Type:        RuleTypeTargeting,
 		Priority:    90,
 		MutexGroup:  RuleMutexNewUserPromo,
@@ -38,12 +32,12 @@ var DefaultRules = []Rule{
 		Condition: &Condition{
 			Operator: ConditionAnd,
 			Children: []Condition{
-				{Field: "user.tags", Operator: ConditionContains, Value: UserTagHighValue},
+				{Field: "user.register_days", Operator: ConditionLte, Value: 7},
 				{Field: "cart.total_amount", Operator: ConditionGte, Value: 120},
 			},
 		},
 		Actions: []Action{
-			{Type: ActionBenefitSend, Params: map[string]interface{}{"benefit_type": BenefitTypeFreeShipping}},
+			{Type: ActionBenefitSend, Params: map[string]interface{}{"benefit_type": BenefitTypeCoupon, "template_id": "CP_NEW_USER_90_OFF", "count": 1}},
 		},
 	},
 	{
