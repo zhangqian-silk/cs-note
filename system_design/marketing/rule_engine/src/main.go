@@ -19,6 +19,7 @@ func main() {
 	runRecoScenario(rules)
 	runAfterScenario(rules)
 	runPipelineScenario(rules)
+	runReteExample()
 }
 
 type EligibilityHandler struct {
@@ -271,6 +272,78 @@ func runPipelineScenario(rules []Rule) {
 	printPipelineOutput(ctx)
 }
 
+func runReteExample() {
+	rules := LoadRules()
+	runReteScenario("rete_targeting", filterRulesByType(rules, RuleTypeTargeting), NewFact(map[string]interface{}{
+		"user": map[string]interface{}{
+			"register_days": 5,
+			"city":          "北京",
+			"tags":          []interface{}{UserTagHighValue, "vip"},
+		},
+		"cart": map[string]interface{}{
+			"total_amount": 320,
+		},
+	}))
+	runReteScenario("rete_pricing", filterRulesByType(rules, RuleTypePricing), NewFact(map[string]interface{}{
+		"user": map[string]interface{}{
+			"level_mask": LevelMaskDiamond,
+		},
+		"cart": map[string]interface{}{
+			"total_amount": 200,
+			"threshold":    150,
+			"coupons_mask": CouponMaskPlatform + CouponMaskFullReduction,
+		},
+	}))
+	runReteScenario("rete_risk_control", filterRulesByType(rules, RuleTypeRiskControl), NewFact(map[string]interface{}{
+		"risk": map[string]interface{}{
+			"daily_coupon_count": 3,
+			"user_blacklist":     false,
+			"device_blacklist":   true,
+		},
+	}))
+	runReteScenario("rete_task", filterRulesByType(rules, RuleTypeTask), NewFact(map[string]interface{}{
+		"task": map[string]interface{}{
+			"checkin_streak":    7,
+			"profile_completed": true,
+			"first_order":       true,
+		},
+	}))
+	runReteScenario("rete_touch", filterRulesByType(rules, RuleTypeTouch), NewFact(map[string]interface{}{
+		"user": map[string]interface{}{
+			"push_enabled":  false,
+			"phone_verified": true,
+		},
+		"touch": map[string]interface{}{
+			"message_count_24h": 2,
+		},
+	}))
+	runReteScenario("rete_reco", filterRulesByType(rules, RuleTypeReco), NewFact(map[string]interface{}{
+		"reco": map[string]interface{}{
+			"scene":          RecoSceneBigPromo,
+			"merchant_score": 2.8,
+		},
+	}))
+	runReteScenario("rete_after", filterRulesByType(rules, RuleTypeAfter), NewFact(map[string]interface{}{
+		"after": map[string]interface{}{
+			"credit_score":            720,
+			"refund_amount":           100,
+			"delivery_delay_minutes": 35,
+		},
+	}))
+}
+
+func runReteScenario(title string, rules []Rule, fact *Fact) {
+	fmt.Println("=== " + title + " ===")
+	printRules(rules)
+	printFact(fact)
+	engine := NewReteEngine(rules)
+	results, err := engine.Evaluate(fact)
+	if err != nil {
+		panic(err)
+	}
+	printResults(results)
+}
+
 func printRules(rules []Rule) {
 	fmt.Println("rules:")
 	if len(rules) == 0 {
@@ -442,4 +515,3 @@ func formatParams(params map[string]interface{}) string {
 	}
 	return strings.Join(parts, ", ")
 }
-
