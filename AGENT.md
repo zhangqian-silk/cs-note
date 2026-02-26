@@ -30,6 +30,38 @@
 
 - 代码实现默认使用 **Golang**
 
+## 伪代码规范
+
+使用《算法导论》风格：
+
+```
+ALGORITHM-NAME(arg1, arg2, ...)
+    // 注释说明
+    if condition then
+        statement1
+        statement2
+    else
+        statement3
+    end if
+    
+    for i ← 1 to n do
+        statement
+    end for
+    
+    while condition do
+        statement
+    end while
+    
+    return result
+```
+
+**关键符号**：
+- 赋值：`←`
+- 注释：`//` 单行
+- 块结束：`end if` / `end for` / `end while` / `end function`
+- 数组索引：`A[i]` 或 `A[1..n]`
+- 数学运算：`⌊⌋` `⌈⌉` `mod` `and` `or` `not`
+
 ## 提交规范
 
 Conventional Commits: `<type>(<scope>): <description>`
