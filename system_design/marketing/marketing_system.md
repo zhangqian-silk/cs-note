@@ -371,9 +371,9 @@ flowchart LR
 ```mermaid
 flowchart TB
     L1[应用层<br/>Spring Boot / Go / gRPC]
-    L2[中间件层<br/>规则引擎 | 消息队列 | 缓存 | 搜索 | 调度]
-    L3[存储层<br/>MySQL | HBase | Nebula | OSS | Doris]
-    L4[基础设施层<br/>K8s | Istio | Prometheus | ELK]
+    L2[中间件层<br/>规则引擎、消息队列、缓存、搜索、调度]
+    L3[存储层<br/>MySQL、HBase、Nebula、OSS、Doris]
+    L4[基础设施层<br/>K8s、Istio、Prometheus、ELK]
     
     L1 --> L2 --> L3 --> L4
     
@@ -501,10 +501,10 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    L1[智能决策层<br/>Uplift模型 | RL Agent | MTA归因 | AB实验]
-    L2[中台能力层<br/>低代码画布 | CDP画像 | 权益中心 | 消息网关 | 人群圈选]
-    L3[数据基础设施层<br/>Flink | ClickHouse | HBase | Nebula | Kafka]
-    L4[容灾与高可用层<br/>LDC单元化 | 异地多活 | 熔断限流 | 灰度发布]
+    L1[智能决策层<br/>Uplift模型、RL Agent、MTA归因、AB实验]
+    L2[中台能力层<br/>低代码画布、CDP画像、权益中心、消息网关、人群圈选]
+    L3[数据基础设施层<br/>Flink、ClickHouse、HBase、Nebula、Kafka]
+    L4[容灾与高可用层<br/>LDC单元化、异地多活、熔断限流、灰度发布]
     
     L1 --> L2 --> L3 --> L4
     
