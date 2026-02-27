@@ -67,10 +67,3 @@ ALGORITHM-NAME(arg1, arg2, ...)
 Conventional Commits: `<type>(<scope>): <description>`
 
 类型: `feat` `fix` `docs` `refactor` `style` `test` `chore`
-
-## 禁止事项
-
-1. 不批量替换引号类型
-2. 不自动格式化整个文件
-3. 不删除 front matter
-4. 不添加未请求的内容
