@@ -371,26 +371,14 @@ flowchart LR
 ### 8.3 用户转化闭环
 
 ```mermaid
-flowchart TD
-    subgraph AARRR模型
-        A[Acquisition<br/>获客]
-        B[Activation<br/>激活]
-        C[Retention<br/>留存]
-        D[Revenue<br/>变现]
-        E[Referral<br/>推荐]
-    end
+flowchart LR
+    A[Acquisition<br/>获客] -->|拉新活动| B[Activation<br/>激活]
+    B -->|新手任务| C[Retention<br/>留存]
+    C -->|会员体系| D[Revenue<br/>变现]
+    D -->|邀请奖励| E[Referral<br/>推荐]
+    E -->|裂变传播| A
     
-    A -->|拉新活动/首单优惠| B
-    B -->|新手任务/引导奖励| C
-    C -->|签到奖励/会员体系| D
-    D -->|优惠券/满减/折扣| E
-    E -->|邀请奖励/拼团/分享| A
-    
-    A --> F[LTV 最大化]
-    B --> F
-    C --> F
-    D --> F
-    E --> F
+    A & B & C & D & E --> F[LTV 最大化]
     
     style A fill:#e3f2fd
     style B fill:#e8f5e9
@@ -415,43 +403,37 @@ flowchart TD
 ### 9.1 整体架构技术栈
 
 ```mermaid
-flowchart TB
-    subgraph 应用层[应用层 Application]
-        A1[Spring Boot / Go Microservice]
-        A2[gRPC / REST API]
+flowchart LR
+    subgraph L1[应用层]
+        A[Spring Boot / Go<br/>gRPC / REST API]
     end
     
-    subgraph 中间件层[中间件层 Middleware]
-        M1[规则引擎<br/>Drools / LiteFlow]
-        M2[消息队列<br/>Kafka / RocketMQ]
+    subgraph L2[中间件层]
+        M1[规则引擎<br/>Drools/LiteFlow]
+        M2[消息队列<br/>Kafka/RocketMQ]
         M3[缓存<br/>Redis Cluster]
-        M4[搜索引擎<br/>ES / ClickHouse]
-        M5[任务调度<br/>XXL-Job / Temporal]
+        M4[搜索<br/>ES/ClickHouse]
+        M5[调度<br/>XXL-Job]
     end
     
-    subgraph 存储层[存储层 Storage]
-        S1[关系型<br/>MySQL / TiDB]
-        S2[宽表<br/>HBase / Cassandra]
-        S3[图数据库<br/>Nebula / Neo4j]
-        S4[对象存储<br/>OSS / MinIO]
-        S5[数据仓库<br/>Doris / StarRocks]
+    subgraph L3[存储层]
+        S1[MySQL/TiDB]
+        S2[HBase]
+        S3[Nebula/Neo4j]
+        S4[OSS/MinIO]
+        S5[Doris/StarRocks]
     end
     
-    subgraph 基础设施层[基础设施层 Infrastructure]
-        I1[Kubernetes]
-        I2[Istio]
-        I3[Prometheus/Grafana]
-        I4[ELK/Fluentd]
+    subgraph L4[基础设施层]
+        I[K8s + Istio + Prometheus + ELK]
     end
     
-    应用层 --> 中间件层
-    中间件层 --> 存储层
-    存储层 --> 基础设施层
+    L1 --> L2 --> L3 --> L4
     
-    style 应用层 fill:#e3f2fd
-    style 中间件层 fill:#e8f5e9
-    style 存储层 fill:#fff8e1
-    style 基础设施层 fill:#fce4ec
+    style L1 fill:#e3f2fd
+    style L2 fill:#e8f5e9
+    style L3 fill:#fff8e1
+    style L4 fill:#fce4ec
 ```
 
 ### 9.2 核心组件选型对比
@@ -516,7 +498,7 @@ flowchart TB
 **目标**：快速验证核心业务价值，支撑早期业务增长。
 
 ```mermaid
-flowchart TB
+flowchart LR
     subgraph 营销服务[营销服务 Monolith]
         A1[活动管理]
         A2[规则引擎]
@@ -524,15 +506,10 @@ flowchart TB
         A4[消息推送]
     end
     
-    subgraph 数据层[数据层]
-        D1[(MySQL)]
-        D2[(Redis)]
-    end
-    
-    营销服务 --> 数据层
+    营销服务 --> D1[(MySQL)]
+    营销服务 --> D2[(Redis)]
     
     style 营销服务 fill:#e3f2fd
-    style 数据层 fill:#fff8e1
 ```
 
 **关键决策**：
@@ -551,29 +528,19 @@ flowchart TB
 **目标**：支撑业务快速增长，提升系统稳定性与扩展性。
 
 ```mermaid
-flowchart TB
+flowchart LR
     subgraph 服务层[服务层]
-        S1[活动中心<br/>Service]
-        S2[规则中心<br/>Service]
-        S3[权益中心<br/>Service]
-        S4[消息中心<br/>Service]
+        S1[活动中心]
+        S2[规则中心]
+        S3[权益中心]
+        S4[消息中心]
     end
     
-    subgraph 数据层[数据层]
-        D1[(MySQL<br/>分库分表)]
-        D2[(Redis<br/>Cluster)]
-    end
-    
-    subgraph 消息层[消息层]
-        M1[Kafka / RocketMQ<br/>事件总线]
-    end
-    
-    服务层 --> 数据层
-    服务层 --> 消息层
+    服务层 --> D1[(MySQL<br/>分库分表)]
+    服务层 --> D2[(Redis<br/>Cluster)]
+    服务层 --> M1[Kafka/RocketMQ<br/>事件总线]
     
     style 服务层 fill:#e3f2fd
-    style 数据层 fill:#fff8e1
-    style 消息层 fill:#e8f5e9
 ```
 
 **关键演进**：
@@ -593,45 +560,43 @@ flowchart TB
 **目标**：支撑海量用户与高并发场景，实现智能化运营。
 
 ```mermaid
-flowchart TB
-    subgraph 智能决策层[智能决策层]
-        I1[Uplift 模型]
+flowchart LR
+    subgraph L1[智能决策层]
+        I1[Uplift模型]
         I2[RL Agent]
-        I3[MTA 归因]
-        I4[AB实验 平台]
+        I3[MTA归因]
+        I4[AB实验平台]
     end
     
-    subgraph 中台能力层[中台能力层]
-        M1[低代码 画布]
-        M2[CDP 画像]
-        M3[权益 中心]
-        M4[消息 网关]
-        M5[人群 圈选]
+    subgraph L2[中台能力层]
+        M1[低代码画布]
+        M2[CDP画像]
+        M3[权益中心]
+        M4[消息网关]
+        M5[人群圈选]
     end
     
-    subgraph 数据基础设施层[数据基础设施层]
-        D1[Flink<br/>实时计算]
-        D2[ClickHouse<br/>分析]
-        D3[HBase<br/>画像存储]
-        D4[Nebula<br/>图数据库]
-        D5[Kafka<br/>事件流]
+    subgraph L3[数据基础设施层]
+        D1[Flink]
+        D2[ClickHouse]
+        D3[HBase]
+        D4[Nebula]
+        D5[Kafka]
     end
     
-    subgraph 容灾与高可用层[容灾与高可用层]
-        H1[LDC 单元化架构]
+    subgraph L4[容灾与高可用层]
+        H1[LDC单元化]
         H2[异地多活]
         H3[熔断限流]
         H4[灰度发布]
     end
     
-    智能决策层 --> 中台能力层
-    中台能力层 --> 数据基础设施层
-    数据基础设施层 --> 容灾与高可用层
+    L1 --> L2 --> L3 --> L4
     
-    style 智能决策层 fill:#f3e5f5
-    style 中台能力层 fill:#e8f5e9
-    style 数据基础设施层 fill:#fff8e1
-    style 容灾与高可用层 fill:#e3f2fd
+    style L1 fill:#f3e5f5
+    style L2 fill:#e8f5e9
+    style L3 fill:#fff8e1
+    style L4 fill:#e3f2fd
 ```
 
 **关键能力**：
