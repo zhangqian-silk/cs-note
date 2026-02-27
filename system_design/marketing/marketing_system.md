@@ -267,29 +267,7 @@ $$Uplift = P(Y|T=1, X) - P(Y|T=0, X)$$
 
 #### 7.4.3 增量归因与 Uplift 分析
 
-传统的 A/B 实验只能回答"策略是否有效"，Uplift 分析可以回答"对谁有效"：
-
-```mermaid
-quadrantChart
-    title Uplift 四象限分析
-    x-axis 低干预响应 --> 高干预响应
-    y-axis 低自然转化 --> 高自然转化
-    quadrant-1 说服型 (Persuadables)
-    quadrant-2 自然转化型 (Sure Things)
-    quadrant-3 无动于衷型 (Lost Causes)
-    quadrant-4 反作用型 (Sleeping Dogs)
-    Persuadables: [0.8, 0.2]
-    Sure Things: [0.8, 0.8]
-    Lost Causes: [0.2, 0.2]
-    Sleeping Dogs: [0.2, 0.8]
-```
-
-| 象限 | 类型 | 特征 | 策略 |
-| :--- | :--- | :--- | :--- |
-| 右下 | **说服型 (Persuadables)** | 给权益才转化 | **重点营销**（ROI 核心来源） |
-| 右上 | **自然转化型 (Sure Things)** | 不给权益也转化 | **停止预算**（避免自然流量补贴） |
-| 左下 | **无动于衷型 (Lost Causes)** | 给不给都不转化 | **放弃干预**（节省资源） |
-| 左上 | **反作用型 (Sleeping Dogs)** | 给权益反而流失 | **严格隔离**（避免品牌伤害） |
+传统的 A/B 实验只能回答"策略是否有效"，Uplift 分析可以回答"对谁有效"。关于 Uplift 模型的核心原理和四象限分析，详见 [5.1 Uplift 模型与营销增益评估](#51-uplift-模型与营销增益评估)。
 
 **实验平台核心能力**：
 - **分层实验**：多个实验并行执行，互不干扰
