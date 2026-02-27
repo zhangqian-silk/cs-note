@@ -446,7 +446,7 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    S[营销服务 Monolith<br/>活动管理 | 规则引擎 | 优惠券 | 消息推送]
+    S[营销服务 Monolith<br/>活动管理、规则引擎、优惠券、消息推送]
     D1[(MySQL)]
     D2[(Redis)]
     S --> D1
@@ -472,7 +472,7 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    S[服务层<br/>活动中心 | 规则中心 | 权益中心 | 消息中心]
+    S[服务层<br/>活动中心、规则中心、权益中心、消息中心]
     D1[(MySQL<br/>分库分表)]
     D2[(Redis<br/>Cluster)]
     M[Kafka/RocketMQ<br/>事件总线]
