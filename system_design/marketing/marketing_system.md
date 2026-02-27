@@ -237,44 +237,6 @@ $$Uplift = P(Y|T=1, X) - P(Y|T=0, X)$$
   - **核销率**：已使用优惠券 / 已发放优惠券，衡量权益吸引力
   - **人效提升**：低代码画布上线活动数 / 人天，衡量业务敏捷度
 
-### 7.4 实验评估框架
-
-营销系统的迭代依赖科学的实验评估体系。
-
-#### 7.4.1 A/B 实验设计
-
-| 要素 | 说明 | 示例 |
-| :--- | :--- | :--- |
-| **实验假设** | 明确要验证的因果关系 | "满100减20比满150减30转化率更高" |
-| **分流策略** | 用户维度随机分流，保证组间同质 | Hash(UserID) % 100 |
-| **样本量计算** | 基于最小可检测效应 (MDE) | MDE=5%, Power=80%, α=0.05 |
-| **实验周期** | 考虑周末/节假日效应 | 至少覆盖一个完整周期 (7天) |
-
-#### 7.4.2 统计显著性评估
-
-```text
-# 核心指标
-- 提升幅度 (Lift): (实验组指标 - 对照组指标) / 对照组指标
-- 置信区间 (CI): 提升幅度的 95% 置信区间
-- P值 (P-value): 原假设成立的概率，P < 0.05 视为显著
-- 统计功效 (Power): 检测到真实效应的概率，通常要求 ≥ 80%
-
-# 显著性判断标准
-1. P值 < 0.05 且 置信区间不跨 0
-2. 实验组样本量达到预设阈值
-3. 多重比较校正 (Bonferroni / FDR)
-```
-
-#### 7.4.3 增量归因与 Uplift 分析
-
-传统的 A/B 实验只能回答"策略是否有效"，Uplift 分析可以回答"对谁有效"。关于 Uplift 模型的核心原理和四象限分析，详见 [5.1 Uplift 模型与营销增益评估](#51-uplift-模型与营销增益评估)。
-
-**实验平台核心能力**：
-- **分层实验**：多个实验并行执行，互不干扰
-- **互斥实验**：保证同一用户只参与一个实验
-- **动态调权**：根据中期结果自动调整流量分配
-- **自动下线**：检测到显著负向效果时自动停止
-
 ## 8. 典型业务流程
 
 本节通过典型业务场景，展示营销系统各组件的协作方式。
@@ -364,23 +326,77 @@ flowchart LR
 | **Revenue** | 促进付费转化 | 优惠券、满减、会员折扣 | ARPU、付费转化率、客单价 |
 | **Referral** | 激励用户传播 | 邀请奖励、拼团、分享红包 | K因子、裂变系数、分享率 |
 
-## 9. 技术选型与开源方案
+## 9. 技术选型
 
 ### 9.1 整体架构技术栈
 
 ```mermaid
-flowchart TB
-    L1[应用层<br/>Spring Boot / Go / gRPC]
-    L2[中间件层<br/>规则引擎、消息队列、缓存、搜索、调度]
-    L3[存储层<br/>MySQL、HBase、Nebula、OSS、Doris]
-    L4[基础设施层<br/>K8s、Istio、Prometheus、ELK]
-    
-    L1 --> L2 --> L3 --> L4
-    
-    style L1 fill:#e3f2fd
-    style L2 fill:#e8f5e9
-    style L3 fill:#fff8e1
-    style L4 fill:#fce4ec
+flowchart LR
+    subgraph A[应用层]
+        direction TB
+        A1[Spring Boot]
+        A2[Go]
+        A3[gRPC]
+        A4[REST API]
+
+        A1 --> A3
+        A2 --> A4
+    end
+
+    subgraph B[中间件层]
+        direction TB
+        B1[规则引擎]
+        B2[消息队列]
+        B3[缓存]
+        B4[搜索]
+        B5[调度]
+
+        B1 --> B3
+        B2 --> B4
+
+    end
+
+    subgraph C[存储层]
+        direction TB
+        C1[MySQL]
+        C2[HBase]
+        C3[Nebula]
+        C4[OSS]
+        C5[Doris]
+
+        C1 --> C3
+        C2 --> C4
+
+    end
+
+    subgraph D[基础设施层]
+        direction TB
+        D1[K8s]
+        D2[Istio]
+        D3[Prometheus]
+        D4[ELK]
+
+        D1 --> D3
+        D2 --> D4
+    end
+
+    A --> B --> C --> D
+
+    linkStyle 0 stroke:transparent
+    linkStyle 1 stroke:transparent
+    linkStyle 2 stroke:transparent
+    linkStyle 3 stroke:transparent
+    linkStyle 4 stroke:transparent
+    linkStyle 5 stroke:transparent
+    linkStyle 6 stroke:transparent
+    linkStyle 7 stroke:transparent
+    linkStyle 8 stroke:transparent
+    linkStyle 9 stroke:transparent
+
+    style A fill:#e3f2fd
+    style B fill:#e8f5e9
+    style C fill:#fff8e1
+    style D fill:#fce4ec
 ```
 
 ### 9.2 核心组件选型对比
@@ -426,122 +442,6 @@ flowchart TB
 | 社交关系 | Nebula Graph | Neo4j | 图遍历、二度人脉、团队关系 |
 | 会话状态 | Redis Cluster | Memcached | 高性能、数据结构丰富 |
 | 活动素材 | OSS/MinIO | - | 对象存储、CDN 加速 |
-
-### 9.3 开源方案生态
-
-| 组件类型 | 开源方案 | 成熟度 | 社区活跃度 |
-| :--- | :--- | :--- | :--- |
-| 规则引擎 | Drools, LiteFlow, Grule | ⭐⭐⭐⭐⭐ | 高 |
-| 工作流引擎 | Camunda, Temporal, Activiti | ⭐⭐⭐⭐⭐ | 高 |
-| AB实验平台 | GrowthBook, Statsd, ABBA | ⭐⭐⭐⭐ | 中 |
-| 用户画像平台 | Apache Atlas, DataHub | ⭐⭐⭐⭐ | 中 |
-| 实时计算 | Flink, Spark Streaming | ⭐⭐⭐⭐⭐ | 极高 |
-| 配置中心 | Nacos, Apollo, Etcd | ⭐⭐⭐⭐⭐ | 高 |
-
-## 10. 实施路径与演进建议
-
-### 10.1 从 0 到 1：MVP 阶段
-
-**目标**：快速验证核心业务价值，支撑早期业务增长。
-
-```mermaid
-flowchart TB
-    S[营销服务 Monolith<br/>活动管理、规则引擎、优惠券、消息推送]
-    D1[(MySQL)]
-    D2[(Redis)]
-    S --> D1
-    S --> D2
-    
-    style S fill:#e3f2fd
-```
-
-**关键决策**：
-- 单体架构，快速迭代
-- 使用成熟开源组件（Spring Boot + Redis + MySQL）
-- 规则引擎可选 LiteFlow 或自研简单表达式引擎
-- 消息推送使用第三方服务（如极光、个推）
-
-**不推荐**：
-- 过度设计的微服务架构
-- 自研复杂规则引擎
-- 引入过多中间件
-
-### 10.2 从 1 到 10：业务扩展阶段
-
-**目标**：支撑业务快速增长，提升系统稳定性与扩展性。
-
-```mermaid
-flowchart TB
-    S[服务层<br/>活动中心、规则中心、权益中心、消息中心]
-    D1[(MySQL<br/>分库分表)]
-    D2[(Redis<br/>Cluster)]
-    M[Kafka/RocketMQ<br/>事件总线]
-    S --> D1
-    S --> D2
-    S --> M
-    
-    style S fill:#e3f2fd
-```
-
-**关键演进**：
-- **服务拆分**：活动中心、规则中心、权益中心、消息中心
-- **数据库分库分表**：按业务域拆分，引入 ShardingSphere
-- **引入消息队列**：Kafka/RocketMQ 解耦异步流程
-- **规则引擎升级**：从简单表达式引擎升级为 Drools/LiteFlow
-- **引入分布式事务**：Seata/TCC 解决跨服务事务
-
-**监控告警**：
-- Prometheus + Grafana 监控体系
-- ELK 日志采集与分析
-- 链路追踪：SkyWalking / Jaeger
-
-### 10.3 从 10 到 100：规模化阶段
-
-**目标**：支撑海量用户与高并发场景，实现智能化运营。
-
-```mermaid
-flowchart TB
-    L1[智能决策层<br/>Uplift模型、RL Agent、MTA归因、AB实验]
-    L2[中台能力层<br/>低代码画布、CDP画像、权益中心、消息网关、人群圈选]
-    L3[数据基础设施层<br/>Flink、ClickHouse、HBase、Nebula、Kafka]
-    L4[容灾与高可用层<br/>LDC单元化、异地多活、熔断限流、灰度发布]
-    
-    L1 --> L2 --> L3 --> L4
-    
-    style L1 fill:#f3e5f5
-    style L2 fill:#e8f5e9
-    style L3 fill:#fff8e1
-    style L4 fill:#e3f2fd
-```
-
-**关键能力**：
-- **CDP 平台建设**：统一用户画像，支持实时标签计算
-- **人群圈选引擎**：基于 ClickHouse BitMap 的秒级亿级圈选
-- **低代码画布**：可视化编排，支持沙盒仿真与灰度发布
-- **智能决策**：Uplift 模型、强化学习、多触点归因
-- **单元化架构**：LDC 容灾，异地多活
-
-### 10.4 演进时间线建议
-
-| 阶段 | 时间周期 | 核心目标 | 关键里程碑 |
-| :--- | :--- | :--- | :--- |
-| **MVP** | 0-6个月 | 快速验证 | 单体应用上线，支撑首个营销活动 |
-| **扩展** | 6-18个月 | 稳定性提升 | 服务拆分，QPS 破万，SLA 99.9% |
-| **规模化** | 18-36个月 | 智能化转型 | CDP 平台，Uplift 模型，ROI 提升 20% |
-| **平台化** | 36个月+ | 生态建设 | 开放 API，多业务线复用，智能运营闭环 |
-
-### 10.5 常见陷阱与规避建议
-
-| 陷阱 | 表现 | 规避建议 |
-| :--- | :--- | :--- |
-| **过度设计** | MVP 阶段引入微服务、K8s、Service Mesh | 保持简单，按需演进 |
-| **规则爆炸** | 规则数量失控，维护成本极高 | 规则治理、定期清理、版本管理 |
-| **数据孤岛** | 各业务线画像数据不互通 | 统一 CDP 平台，One ID 对齐 |
-| **资损事故** | 优惠券多发、叠加规则冲突 | 仿真验证、预算熔断、对账机制 |
-| **性能瓶颈** | 大促期间系统崩溃 | 压测常态化、限流降级、弹性扩容 |
-| **烟囱系统** | 各营销活动独立开发，无法复用 | 中台化、组件化、低代码平台 |
-
----
 
 ## 结语
 
