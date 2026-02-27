@@ -283,26 +283,12 @@ $$Uplift = P(Y|T=1, X) - P(Y|T=0, X)$$
 
 ```mermaid
 flowchart LR
-    subgraph 触发层
-        A[用户行为<br/>下单/注册/签到]
-    end
-    
-    subgraph 数据层
-        B[事件采集<br/>MQ]
-        C[CDP画像增强]
-        D[人群圈选]
-    end
-    
-    subgraph 决策层
-        E[规则引擎<br/>条件匹配]
-    end
-    
-    subgraph 执行层
-        F[权益中心<br/>发券/扣库存]
-        G[消息网关<br/>多渠道推送]
-    end
-    
-    A --> B --> C --> D --> E --> F --> G
+    A[用户行为<br/>下单/注册] --> B[事件采集<br/>MQ]
+    B --> C[CDP画像<br/>增强]
+    C --> D[人群圈选]
+    D --> E[规则引擎<br/>匹配]
+    E --> F[权益中心<br/>发券]
+    F --> G[消息网关<br/>推送]
     
     style A fill:#e1f5fe
     style E fill:#fff3e0
@@ -323,31 +309,11 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    subgraph 创建阶段
-        A[创建<br/>活动信息/预算/时间]
-    end
-    
-    subgraph 审批阶段
-        B[审批<br/>预算审批/风险评估/合规审核]
-    end
-    
-    subgraph 配置阶段
-        C[配置<br/>规则/人群/权益/渠道]
-    end
-    
-    subgraph 上线阶段
-        D[上线<br/>灰度发布/全量推送]
-    end
-    
-    subgraph 监控阶段
-        E[监控<br/>实时监控/告警处理/数据分析]
-    end
-    
-    subgraph 收尾阶段
-        F[下线<br/>效果复盘/经验沉淀]
-    end
-    
-    A --> B --> C --> D --> E --> F
+    A[创建<br/>活动信息/预算] --> B[审批<br/>风险评估/合规]
+    B --> C[配置<br/>规则/人群/权益]
+    C --> D[上线<br/>灰度/全量]
+    D --> E[监控<br/>告警/分析]
+    E --> F[下线<br/>复盘/沉淀]
     
     style A fill:#e3f2fd
     style B fill:#fff8e1
@@ -403,30 +369,11 @@ flowchart LR
 ### 9.1 整体架构技术栈
 
 ```mermaid
-flowchart LR
-    subgraph L1[应用层]
-        A[Spring Boot / Go<br/>gRPC / REST API]
-    end
-    
-    subgraph L2[中间件层]
-        M1[规则引擎<br/>Drools/LiteFlow]
-        M2[消息队列<br/>Kafka/RocketMQ]
-        M3[缓存<br/>Redis Cluster]
-        M4[搜索<br/>ES/ClickHouse]
-        M5[调度<br/>XXL-Job]
-    end
-    
-    subgraph L3[存储层]
-        S1[MySQL/TiDB]
-        S2[HBase]
-        S3[Nebula/Neo4j]
-        S4[OSS/MinIO]
-        S5[Doris/StarRocks]
-    end
-    
-    subgraph L4[基础设施层]
-        I[K8s + Istio + Prometheus + ELK]
-    end
+flowchart TB
+    L1[应用层<br/>Spring Boot / Go / gRPC]
+    L2[中间件层<br/>规则引擎 | 消息队列 | 缓存 | 搜索 | 调度]
+    L3[存储层<br/>MySQL | HBase | Nebula | OSS | Doris]
+    L4[基础设施层<br/>K8s | Istio | Prometheus | ELK]
     
     L1 --> L2 --> L3 --> L4
     
@@ -498,18 +445,14 @@ flowchart LR
 **目标**：快速验证核心业务价值，支撑早期业务增长。
 
 ```mermaid
-flowchart LR
-    subgraph 营销服务[营销服务 Monolith]
-        A1[活动管理]
-        A2[规则引擎]
-        A3[优惠券]
-        A4[消息推送]
-    end
+flowchart TB
+    S[营销服务 Monolith<br/>活动管理 | 规则引擎 | 优惠券 | 消息推送]
+    D1[(MySQL)]
+    D2[(Redis)]
+    S --> D1
+    S --> D2
     
-    营销服务 --> D1[(MySQL)]
-    营销服务 --> D2[(Redis)]
-    
-    style 营销服务 fill:#e3f2fd
+    style S fill:#e3f2fd
 ```
 
 **关键决策**：
@@ -528,19 +471,16 @@ flowchart LR
 **目标**：支撑业务快速增长，提升系统稳定性与扩展性。
 
 ```mermaid
-flowchart LR
-    subgraph 服务层[服务层]
-        S1[活动中心]
-        S2[规则中心]
-        S3[权益中心]
-        S4[消息中心]
-    end
+flowchart TB
+    S[服务层<br/>活动中心 | 规则中心 | 权益中心 | 消息中心]
+    D1[(MySQL<br/>分库分表)]
+    D2[(Redis<br/>Cluster)]
+    M[Kafka/RocketMQ<br/>事件总线]
+    S --> D1
+    S --> D2
+    S --> M
     
-    服务层 --> D1[(MySQL<br/>分库分表)]
-    服务层 --> D2[(Redis<br/>Cluster)]
-    服务层 --> M1[Kafka/RocketMQ<br/>事件总线]
-    
-    style 服务层 fill:#e3f2fd
+    style S fill:#e3f2fd
 ```
 
 **关键演进**：
@@ -560,36 +500,11 @@ flowchart LR
 **目标**：支撑海量用户与高并发场景，实现智能化运营。
 
 ```mermaid
-flowchart LR
-    subgraph L1[智能决策层]
-        I1[Uplift模型]
-        I2[RL Agent]
-        I3[MTA归因]
-        I4[AB实验平台]
-    end
-    
-    subgraph L2[中台能力层]
-        M1[低代码画布]
-        M2[CDP画像]
-        M3[权益中心]
-        M4[消息网关]
-        M5[人群圈选]
-    end
-    
-    subgraph L3[数据基础设施层]
-        D1[Flink]
-        D2[ClickHouse]
-        D3[HBase]
-        D4[Nebula]
-        D5[Kafka]
-    end
-    
-    subgraph L4[容灾与高可用层]
-        H1[LDC单元化]
-        H2[异地多活]
-        H3[熔断限流]
-        H4[灰度发布]
-    end
+flowchart TB
+    L1[智能决策层<br/>Uplift模型 | RL Agent | MTA归因 | AB实验]
+    L2[中台能力层<br/>低代码画布 | CDP画像 | 权益中心 | 消息网关 | 人群圈选]
+    L3[数据基础设施层<br/>Flink | ClickHouse | HBase | Nebula | Kafka]
+    L4[容灾与高可用层<br/>LDC单元化 | 异地多活 | 熔断限流 | 灰度发布]
     
     L1 --> L2 --> L3 --> L4
     
